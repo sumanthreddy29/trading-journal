@@ -1,0 +1,20 @@
+{
+  "name": "trading-journal",
+  "version": "1.0.0",
+  "description": "Personal trading journal with analytics dashboard, notes, and screenshot support",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "dev:client": "cd client && npm run dev",
+    "build": "cd client && npm install && npm run build"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.3",
+    "express-rate-limit": "^8.3.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.11.3"
+  }
+}

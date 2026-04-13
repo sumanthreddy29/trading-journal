@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: trading-journal
+    runtime: node
+    buildCommand: npm run build
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        sync: false       # Set this manually in Render dashboard (from Neon)
+      - key: JWT_SECRET
+        generateValue: true  # Render auto-generates a secure random value
