@@ -20,10 +20,16 @@ const JWT_SECRET = process.env.JWT_SECRET;
 
 // ── PostgreSQL connection pool ────────────────────
 // Set DATABASE_URL in your environment (Neon connection string or local Postgres)
+// Strip sslmode query param from the URL — we set SSL explicitly below to avoid
+// pg-connection-string's deprecation warning about 'require' vs 'verify-full'.
+const dbUrl = process.env.DATABASE_URL
+  ? process.env.DATABASE_URL.replace(/[?&]sslmode=[^&]*/g, '').replace(/\?$/, '')
+  : undefined;
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: dbUrl,
   ssl: process.env.DATABASE_URL
-    ? { rejectUnauthorized: true }  // Neon requires verified SSL
+    ? { rejectUnauthorized: true }  // Neon: full certificate verification
     : false
 });
 
