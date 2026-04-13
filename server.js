@@ -23,7 +23,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL
-    ? { rejectUnauthorized: false }  // Railway uses self-signed certs
+    ? { rejectUnauthorized: true }  // Neon requires verified SSL
     : false
 });
 
@@ -398,7 +398,7 @@ initDB()
   .then(() => {
     app.listen(PORT, () => {
       console.log(`\n🚀  Trading Journal  →  http://localhost:${PORT}`);
-      console.log(`🗄️   Database        →  PostgreSQL (${process.env.DATABASE_URL ? 'Railway' : 'local'})\n`);
+      console.log(`🗄️   Database        →  PostgreSQL (${process.env.DATABASE_URL ? 'Neon' : 'local'})\n`);
     });
   })
   .catch(err => {
