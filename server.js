@@ -127,6 +127,9 @@ async function initDB() {
   await pool.query(`
     ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'fidelity';
   `);
+  await pool.query(`
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS strike_price REAL;
+  `);
   console.log('✅ Database tables ready');
 }
 
@@ -226,11 +229,11 @@ app.post('/api/trades', auth, async (req, res) => {
       proceeds, cost_basis, total_gl,
       same_day, is_ndx, lt_gl, st_gl, status,
       entry_reason, market_context, exit_notes, failure_reason,
-      screenshot_b64, screenshot_name, tags
+      screenshot_b64, screenshot_name, tags, strike_price
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
       $11,$12,$13,$14,$15,$16,$17,$18,
-      $19,$20,$21,$22,$23,$24,$25
+      $19,$20,$21,$22,$23,$24,$25,$26
     ) RETURNING id`,
     [
       req.user.id,
@@ -258,6 +261,7 @@ app.post('/api/trades', auth, async (req, res) => {
       t.screenshot_b64  || null,
       t.screenshot_name || null,
       t.tags            || null,
+      t.strike_price     ?? null,
     ]
   );
   res.status(201).json({ id: result.rows[0].id, ...t });
@@ -282,9 +286,9 @@ app.put('/api/trades/:id', auth, async (req, res) => {
       proceeds=$10, cost_basis=$11, total_gl=$12,
       same_day=$13, is_ndx=$14, lt_gl=$15, st_gl=$16, status=$17,
       entry_reason=$18, market_context=$19, exit_notes=$20, failure_reason=$21,
-      screenshot_b64=$22, screenshot_name=$23, tags=$24,
+      screenshot_b64=$22, screenshot_name=$23, tags=$24, strike_price=$25,
       updated_at=NOW()
-    WHERE id=$25 AND user_id=$26`,
+    WHERE id=$26 AND user_id=$27`,
     [
       m(t.symbol,       e.symbol)?.toUpperCase(),
       m(t.base_symbol,  e.base_symbol)?.toUpperCase(),
@@ -310,6 +314,7 @@ app.put('/api/trades/:id', auth, async (req, res) => {
       m(t.screenshot_b64,   e.screenshot_b64),
       m(t.screenshot_name,  e.screenshot_name),
       m(t.tags,             e.tags),
+      t.strike_price !== undefined ? t.strike_price : e.strike_price,
       req.params.id,
       req.user.id,
     ]

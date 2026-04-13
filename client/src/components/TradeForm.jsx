@@ -40,6 +40,7 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
   const [failReason,   setFailReason]  = useState('');
   const [shotB64,      setShotB64]     = useState(null);
   const [shotName,     setShotName]    = useState(null);
+  const [strike,       setStrike]      = useState('');
   const [saving,       setSaving]      = useState(false);
   const [rulesList,    setRulesList]   = useState([]);
   const [ruleAdherence,setRuleAdherence] = useState({}); // { rule_id: true|false } or absent = not logged
@@ -57,8 +58,10 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
     setDesc(t.description || '');
     setType(t.trade_type || 'CALL');
     setQty(t.quantity || 1);
-    setBuy(t.buy_price || 0);
-    setSell(t.sell_price || 0);
+    const isOpt = ['CALL','PUT'].includes((t.trade_type || '').toUpperCase());
+    setBuy(isOpt  ? r2((t.buy_price  || 0) / 100) : (t.buy_price  || 0));
+    setSell(isOpt ? r2((t.sell_price || 0) / 100) : (t.sell_price || 0));
+    setStrike(t.strike_price != null ? t.strike_price : '');
     setEntryDate(slashToIso(t.date_acquired));
     setExitDate(slashToIso(t.date_sold));
     setTags(t.tags || '');
@@ -99,8 +102,9 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
       description:    desc.trim() || sym,
       trade_type:     type,
       quantity:       +qty || 1,
-      buy_price:      +buy  || 0,
-      sell_price:     +sell || 0,
+      buy_price:      type === 'CALL' || type === 'PUT' ? r2((+buy  || 0) * 100) : (+buy  || 0),
+      sell_price:     type === 'CALL' || type === 'PUT' ? r2((+sell || 0) * 100) : (+sell || 0),
+      strike_price:   (type === 'CALL' || type === 'PUT') && strike !== '' ? +strike : null,
       date_acquired:  ed,
       date_sold:      xd,
       proceeds,
@@ -172,9 +176,18 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
               </div>
               <div className="form-row cols3">
                 <div className="f-group"><label>Contracts / Shares *</label><input type="number" value={qty}  onChange={e => setQty(e.target.value)}  min="1" step="any" /></div>
-                <div className="f-group"><label>Buy Price *</label>         <input type="number" value={buy}  onChange={e => setBuy(e.target.value)}  step="0.01" placeholder="0.00" /></div>
-                <div className="f-group"><label>Sell Price *</label>        <input type="number" value={sell} onChange={e => setSell(e.target.value)} step="0.01" placeholder="0.00" /></div>
+                <div className="f-group"><label>Buy Price *{(type==='CALL'||type==='PUT') ? ' (per share)' : ''}</label><input type="number" value={buy}  onChange={e => setBuy(e.target.value)}  step="0.01" placeholder="0.00" /></div>
+                <div className="f-group"><label>Sell Price *{(type==='CALL'||type==='PUT') ? ' (per share)' : ''}</label><input type="number" value={sell} onChange={e => setSell(e.target.value)} step="0.01" placeholder="0.00" /></div>
               </div>
+              {(type === 'CALL' || type === 'PUT') && (
+                <div className="form-row">
+                  <div className="f-group">
+                    <label>Strike Price</label>
+                    <input type="number" value={strike} onChange={e => setStrike(e.target.value)} step="1" placeholder="e.g. 25600" />
+                  </div>
+                  <div className="f-group" />
+                </div>
+              )}
               <div className="form-row">
                 <div className="f-group"><label>Entry Date *</label><input type="date" value={entryDate} onChange={e => setEntryDate(e.target.value)} /></div>
                 <div className="f-group"><label>Exit Date *</label> <input type="date" value={exitDate}  onChange={e => setExitDate(e.target.value)}  /></div>

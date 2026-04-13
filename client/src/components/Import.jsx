@@ -49,6 +49,7 @@ function rowToTrade(r) {
     proceeds:         parseFloat(r.proceeds   || r.sell_amount || r.Proceeds    || 0),
     cost_basis:       parseFloat(r.cost_basis || r.buy_amount  || r['Cost Basis'] || 0),
     total_gl:         parseFloat(r.total_gl   || r.net_pnl     || r['Net P&L']  || 0),
+    strike_price:     r.strike_price != null && r.strike_price !== '' ? parseFloat(r.strike_price) : null,
     // Derive same_day from dates; fall back to explicit field if present
     same_day:         'same_day' in r
                         ? (r.same_day === 'true' || r.same_day === 'Yes')
