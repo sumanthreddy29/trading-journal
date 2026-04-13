@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { fMoney, fY, r2 } from '../utils/helpers.js';
+import { drawHistogram, drawDOW } from '../utils/canvas.js';
 
 // ── Pure-computation helpers ──────────────────────
 
@@ -186,8 +187,10 @@ function MonthBars({ months }) {
 }
 
 // ── Main component ────────────────────────────────
-export default function Analytics({ trades }) {
+export default function Analytics({ trades, data }) {
   const [tagSort, setTagSort] = useState('total'); // total | pnl | wr
+  const histRef = useRef(null);
+  const dowChartRef = useRef(null);
 
   const hasData = trades.length > 0;
 
@@ -197,6 +200,26 @@ export default function Analytics({ trades }) {
   const monthly  = useMemo(() => computeMonthly(trades),  [trades]);
   const byTag    = useMemo(() => computeByTag(trades),    [trades]);
   const holdStats= useMemo(() => computeHoldStats(trades),[trades]);
+
+  // Daily P&L values for histogram
+  const dailyPnlVals = useMemo(() => {
+    if (!data) return [];
+    return data.dates.map(d => data.dpnl[d]);
+  }, [data]);
+
+  useEffect(() => {
+    if (dailyPnlVals.length > 0) {
+      drawHistogram(histRef.current, dailyPnlVals, 160);
+    }
+  }, [dailyPnlVals]);
+
+  useEffect(() => {
+    if (byDOW.length > 0) {
+      const labels = byDOW.map(r => r.day);
+      const vals   = byDOW.map(r => r.pnl);
+      drawDOW(dowChartRef.current, labels, vals, 160);
+    }
+  }, [byDOW]);
 
   const sortedTags = useMemo(() => {
     const t = [...byTag];
@@ -230,7 +253,7 @@ export default function Analytics({ trades }) {
         </div>
       </div>
 
-      {/* ── Streak cards ── */}
+      {/* ── Streak/advanced summary cards ── */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
         <Card
           label="Current Win Streak"
@@ -270,6 +293,12 @@ export default function Analytics({ trades }) {
             sub={`${lastTwo[1].label} vs ${lastTwo[0].label}`}
             color={momDelta >= 0 ? 'var(--green)' : 'var(--red)'}
           />
+        )}
+        {data?.s?.sharpe != null && (
+          <Card label="Sharpe Ratio" value={data.s.sharpe} sub="annualised" color="var(--purple)" />
+        )}
+        {data?.s?.calmar != null && (
+          <Card label="Calmar Ratio" value={data.s.calmar} sub="ann. return / max DD" color="var(--cyan)" />
         )}
       </div>
 
@@ -438,6 +467,23 @@ export default function Analytics({ trades }) {
           </table>
         )}
       </div>
+
+      {/* ── P&L by Day of Week chart ── */}
+      <div className="chart-card" style={{ marginTop: 14 }}>
+        <SectionHeader dot="var(--yellow)" title="Daily P&L by Day of Week" />
+        <canvas ref={dowChartRef} style={{ width: '100%' }} />
+      </div>
+
+      {/* ── Daily P&L Distribution histogram ── */}
+      {dailyPnlVals.length > 0 && (
+        <div className="chart-card" style={{ marginTop: 14 }}>
+          <SectionHeader dot="var(--cyan)" title="Daily P&L Distribution" />
+          <div style={{ fontSize: '.72rem', color: 'var(--muted)', marginBottom: 8 }}>
+            How often your results land in each profit/loss range
+          </div>
+          <canvas ref={histRef} style={{ width: '100%' }} />
+        </div>
+      )}
     </div>
   );
 }

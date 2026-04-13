@@ -228,3 +228,84 @@ export function drawDonut(el, vals, colors, h = 180) {
   ctx.fillText('trades', cx, cy + 10);
   ctx.textBaseline = 'alphabetic';
 }
+
+export function drawDrawdown(el, id, labels, vals, h = 150) {
+  const r = setupC(el, h); if (!r) return;
+  const { ctx, w, h: ht } = r;
+  const PAD = { t: 20, r: 24, b: 46, l: 66 };
+  const cw = w - PAD.l - PAD.r, ch = ht - PAD.t - PAD.b;
+  const mn = Math.min(...vals, 0), mx = 0;
+  const { ticks, nMin, nMax } = niceTicks(mn, mx, 3);
+  const rng = nMax - nMin || 1;
+  const tx = i => PAD.l + i / (Math.max(vals.length - 1, 1)) * cw;
+  const ty = v => PAD.t + ch - (v - nMin) / rng * ch;
+
+  gridLines(ctx, PAD, cw, ch, ticks, nMin, nMax);
+  // Zero line
+  ctx.strokeStyle = 'rgba(100,130,180,.4)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(PAD.l, ty(0)); ctx.lineTo(PAD.l + cw, ty(0)); ctx.stroke();
+
+  // Area fill (red)
+  ctx.beginPath(); ctx.moveTo(tx(0), ty(0));
+  vals.forEach((v, i) => ctx.lineTo(tx(i), ty(v)));
+  ctx.lineTo(tx(vals.length - 1), ty(0)); ctx.closePath();
+  ctx.fillStyle = 'rgba(239,68,68,.12)'; ctx.fill();
+  // Line
+  ctx.beginPath(); ctx.moveTo(tx(0), ty(vals[0]));
+  vals.forEach((v, i) => ctx.lineTo(tx(i), ty(v)));
+  ctx.strokeStyle = CC.RED; ctx.lineWidth = 1.5; ctx.stroke();
+
+  xLabels(ctx, labels, PAD, cw, ht, Math.max(1, Math.ceil(labels.length / 18)));
+  addHover(el, id, labels, vals, PAD);
+}
+
+export function drawHistogram(el, vals, h = 160) {
+  const r = setupC(el, h); if (!r) return;
+  const { ctx, w, h: ht } = r;
+  const PAD = { t: 20, r: 16, b: 40, l: 50 };
+  const cw = w - PAD.l - PAD.r, ch = ht - PAD.t - PAD.b;
+  if (!vals.length) return;
+
+  const mn = Math.min(...vals), mx = Math.max(...vals);
+  const BINS = 12;
+  const step = Math.max((mx - mn) / BINS, 1);
+  const buckets = Array.from({ length: BINS }, (_, i) => ({
+    from: mn + i * step, to: mn + (i + 1) * step, count: 0
+  }));
+  vals.forEach(v => {
+    const idx = Math.min(BINS - 1, Math.floor((v - mn) / step));
+    if (idx >= 0) buckets[idx].count++;
+  });
+
+  const maxCount = Math.max(...buckets.map(b => b.count), 1);
+  const gap = cw / BINS;
+  const bw = Math.max(2, gap * 0.82);
+  const ty = v => PAD.t + ch - (v / maxCount) * ch;
+
+  // Grid
+  [0, 0.25, 0.5, 0.75, 1].forEach(pct => {
+    const y = PAD.t + ch - pct * ch;
+    ctx.strokeStyle = CC.BORDER; ctx.lineWidth = 0.5;
+    ctx.beginPath(); ctx.moveTo(PAD.l, y); ctx.lineTo(PAD.l + cw, y); ctx.stroke();
+    if (pct > 0) {
+      ctx.fillStyle = CC.MUTED; ctx.font = '9px system-ui'; ctx.textAlign = 'right';
+      ctx.fillText(Math.round(maxCount * pct), PAD.l - 4, y + 3);
+    }
+  });
+
+  buckets.forEach((b, i) => {
+    const x = PAD.l + i * gap + (gap - bw) / 2;
+    const bh = Math.max(1, (b.count / maxCount) * ch);
+    const isPos = (b.from + b.to) / 2 >= 0;
+    ctx.fillStyle = isPos ? 'rgba(34,197,94,.7)' : 'rgba(239,68,68,.7)';
+    rrect(ctx, x, ty(b.count), bw, bh, 3); ctx.fill();
+    // x-axis label
+    ctx.fillStyle = CC.MUTED; ctx.font = '8px system-ui'; ctx.textAlign = 'center';
+    const mid = (b.from + b.to) / 2;
+    ctx.fillText((mid >= 0 ? '+' : '') + (Math.abs(mid) >= 1000 ? '$' + (mid / 1000).toFixed(1) + 'k' : '$' + Math.round(mid)), x + bw / 2, ht - 6);
+  });
+}
+
+export function drawDOW(el, labels, vals, h = 160) {
+  drawMonthly(el, labels, vals, h);
+}

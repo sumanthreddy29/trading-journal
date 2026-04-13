@@ -95,15 +95,73 @@ export function computeStats(trades) {
   const avgWin           = pvs.length ? r2(pvs.reduce((a, b) => a + b, 0) / pvs.length) : 0;
   const avgLoss          = lvs.length ? r2(lvs.reduce((a, b) => a + b, 0) / lvs.length) : 0;
 
+  // ── Advanced stats ────────────────────────────
+  // Max drawdown (peak-to-trough in dollar terms)
+  let peak = -Infinity, maxDD = 0, ddPeak = 0;
+  const drawdownSeries = cum.map(c => {
+    if (c > peak) { peak = c; ddPeak = c; }
+    const dd = c - ddPeak;
+    if (dd < maxDD) maxDD = dd;
+    return dd;
+  });
+  const maxDrawdown = Math.abs(maxDD);
+
+  // Volatility = std dev of daily P&L
+  const dailyVals = dates.map(d => dpnl[d]);
+  const mean = dailyVals.reduce((a, b) => a + b, 0) / (dailyVals.length || 1);
+  const variance = dailyVals.reduce((s, v) => s + (v - mean) ** 2, 0) / (dailyVals.length || 1);
+  const volatility = r2(Math.sqrt(variance));
+
+  // Expectancy per day = avgWin * winRate + avgLoss * lossRate
+  const winRate01 = profitDays / (dates.length || 1);
+  const lossRate01 = lossDays / (dates.length || 1);
+  const expectancy = r2(avgWin * winRate01 + avgLoss * lossRate01);
+
+  // Sharpe = (avgDailyPnl / volatility) * sqrt(252)  [annualised]
+  const avgDailyPnl = dates.length ? r2(totalPnl / dates.length) : 0;
+  const sharpe = volatility > 0 ? r2((avgDailyPnl / volatility) * Math.sqrt(252)) : 0;
+
+  // Recovery factor = total P&L / max drawdown
+  const recoveryFactor = maxDrawdown > 0 ? r2(totalPnl / maxDrawdown) : null;
+
+  // Calmar = annualised return / max drawdown
+  const annReturn = dates.length > 0 ? r2(avgDailyPnl * 252) : 0;
+  const calmar = maxDrawdown > 0 ? r2(annReturn / maxDrawdown) : null;
+
+  // Monthly gross breakdown (profit days / loss days separately)
+  const monthlyGross = {};
+  dates.forEach(d => {
+    const p = d.split('/'), k = p[2] + '-' + p[0].padStart(2, '0');
+    if (!monthlyGross[k]) monthlyGross[k] = { grossProfit: 0, grossLoss: 0, winDays: 0, lossDays: 0, net: 0 };
+    const v = dpnl[d];
+    monthlyGross[k].net = r2(monthlyGross[k].net + v);
+    if (v > 0) { monthlyGross[k].grossProfit = r2(monthlyGross[k].grossProfit + v); monthlyGross[k].winDays++; }
+    else if (v < 0) { monthlyGross[k].grossLoss = r2(monthlyGross[k].grossLoss + v); monthlyGross[k].lossDays++; }
+  });
+
+  // Best / worst month
+  const monthKeys = Object.keys(monthly).sort();
+  const MONTH_NAMES = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const monthLabel = k => { const [y, m] = k.split('-'); return MONTH_NAMES[+m] + ' ' + y; };
+  let bestMonth = null, worstMonth = null;
+  monthKeys.forEach(k => {
+    if (!bestMonth  || monthly[k] > monthly[bestMonth])  bestMonth  = k;
+    if (!worstMonth || monthly[k] < monthly[worstMonth]) worstMonth = k;
+  });
+
   return {
     dates, dpnl, cum, monthly, byInst, byType, details,
+    drawdownSeries, monthlyGross,
     s: {
       totalPnl, profitDays, lossDays, totalDays: dates.length, totalTrades,
       bestDay,  bestDayPnl:  bestDay  ? dpnl[bestDay]  : 0,
       worstDay, worstDayPnl: worstDay ? dpnl[worstDay] : 0,
-      avgDailyPnl: dates.length ? r2(totalPnl / dates.length) : 0,
+      avgDailyPnl,
       winRate:     dates.length ? Math.round(profitDays / dates.length * 1000) / 10 : 0,
       avgWin, avgLoss, mw, ml, sameDays, profitFactor, totalTrades,
+      maxDrawdown, volatility, expectancy, sharpe, recoveryFactor, calmar,
+      bestMonth,  bestMonthPnl:  bestMonth  ? monthly[bestMonth]  : 0, bestMonthLabel:  bestMonth  ? monthLabel(bestMonth)  : null,
+      worstMonth, worstMonthPnl: worstMonth ? monthly[worstMonth] : 0, worstMonthLabel: worstMonth ? monthLabel(worstMonth) : null,
     },
   };
 }

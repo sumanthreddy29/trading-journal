@@ -13,6 +13,7 @@ import Analytics  from './components/Analytics.jsx';
 import Rules      from './components/Rules.jsx';
 import Lightbox   from './components/Lightbox.jsx';
 import Toast      from './components/Toast.jsx';
+import Import     from './components/Import.jsx';
 
 export default function App() {
   const [token,      setToken]      = useState(() => localStorage.getItem('tj_token') || '');
@@ -25,6 +26,8 @@ export default function App() {
   const [highlightId,setHighlightId] = useState(null);
   const [lightboxSrc,setLightboxSrc]= useState(null);
   const [toast,      setToast]      = useState({ msg: '', type: 'ok', visible: false });
+  const [settings,   setSettings]   = useState({});
+  const [withdrawals,setWithdrawals]= useState([]);
 
   const showToast = useCallback((msg, type = 'ok') => {
     setToast({ msg, type, visible: true });
@@ -43,6 +46,8 @@ export default function App() {
       setAllTrades(trades);
       setData(computeStats(trades));
     });
+    API.get('/api/settings').then(s => { if (s) setSettings(s); });
+    API.get('/api/withdrawals').then(w => { if (w) setWithdrawals(w); });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const logout = useCallback(() => {
@@ -56,10 +61,21 @@ export default function App() {
   }, []);
 
   const loadAndRender = useCallback(async () => {
-    const trades = await API.get('/api/trades');
+    const [trades, s, w] = await Promise.all([
+      API.get('/api/trades'),
+      API.get('/api/settings'),
+      API.get('/api/withdrawals'),
+    ]);
     if (!trades) return;
     setAllTrades(trades);
     setData(computeStats(trades));
+    if (s) setSettings(s);
+    if (w) setWithdrawals(w);
+  }, []);
+
+  const handleSettingsChange = useCallback(async (key, value) => {
+    await API.post('/api/settings', { key, value });
+    setSettings(prev => ({ ...prev, [key]: String(value) }));
   }, []);
 
   // On mount: sync token to API module and load data if already logged in
@@ -88,8 +104,11 @@ export default function App() {
           {page === 'dashboard' && (
             <Dashboard
               data={data}
+              settings={settings}
+              withdrawals={withdrawals}
               onRefresh={loadAndRender}
               onDayClick={setDayDate}
+              onSettingsChange={handleSettingsChange}
             />
           )}
           {page === 'journal' && (
@@ -112,10 +131,16 @@ export default function App() {
             <Export trades={allTrades} />
           )}
           {page === 'analytics' && (
-            <Analytics trades={allTrades} />
+            <Analytics trades={allTrades} data={data} />
           )}
           {page === 'rules' && (
             <Rules trades={allTrades} onToast={showToast} />
+          )}
+          {page === 'import' && (
+            <Import
+              onImported={loadAndRender}
+              onToast={showToast}
+            />
           )}
         </main>
         <MobileNav page={page} onNav={setPage} onAddTrade={openAddTrade} onLogout={logout} />

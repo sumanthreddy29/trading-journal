@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════
 //  Trading Journal — Express + PostgreSQL Backend
-//  Works with Railway's built-in Postgres plugin
+//  Hosted on Render · Database on Neon (PostgreSQL)
 // ═══════════════════════════════════════════════════
 require('dotenv').config();
 const express     = require('express');
@@ -19,7 +19,7 @@ if (!process.env.JWT_SECRET) {
 const JWT_SECRET = process.env.JWT_SECRET;
 
 // ── PostgreSQL connection pool ────────────────────
-// Railway automatically sets DATABASE_URL when you add the Postgres plugin
+// Set DATABASE_URL in your environment (Neon connection string or local Postgres)
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL
@@ -82,6 +82,22 @@ async function initDB() {
       rule_id   INTEGER NOT NULL REFERENCES rules(id)  ON DELETE CASCADE,
       followed  BOOLEAN NOT NULL DEFAULT TRUE,
       PRIMARY KEY (trade_id, rule_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      key       TEXT    NOT NULL,
+      value     TEXT    NOT NULL,
+      PRIMARY KEY (user_id, key)
+    );
+
+    CREATE TABLE IF NOT EXISTS withdrawals (
+      id         SERIAL PRIMARY KEY,
+      user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      date       TEXT    NOT NULL,
+      amount     REAL    NOT NULL,
+      note       TEXT,
+      created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `);
   console.log('✅ Database tables ready');
@@ -385,6 +401,85 @@ app.get('/api/stats', auth, async (req, res) => {
     FROM trades WHERE user_id = $1
   `, [req.user.id]);
   res.json(result.rows[0]);
+});
+
+// ════════════════════════════════════════════════════
+//  SETTINGS ROUTES
+app.get('/api/settings', auth, async (req, res) => {
+  const result = await pool.query(
+    'SELECT key, value FROM settings WHERE user_id = $1',
+    [req.user.id]
+  );
+  const obj = {};
+  result.rows.forEach(r => { obj[r.key] = r.value; });
+  res.json(obj);
+});
+
+app.post('/api/settings', auth, async (req, res) => {
+  const { key, value } = req.body;
+  if (!key?.trim()) return res.status(400).json({ error: 'key is required' });
+  await pool.query(
+    'INSERT INTO settings (user_id, key, value) VALUES ($1, $2, $3) ON CONFLICT (user_id, key) DO UPDATE SET value = $3',
+    [req.user.id, key.trim(), String(value ?? '')]
+  );
+  res.json({ success: true });
+});
+
+app.post('/api/settings/bulk', auth, async (req, res) => {
+  const { settings } = req.body;
+  if (!settings || typeof settings !== 'object') return res.status(400).json({ error: 'settings object required' });
+  for (const [key, value] of Object.entries(settings)) {
+    await pool.query(
+      'INSERT INTO settings (user_id, key, value) VALUES ($1, $2, $3) ON CONFLICT (user_id, key) DO UPDATE SET value = $3',
+      [req.user.id, key, String(value ?? '')]
+    );
+  }
+  res.json({ success: true });
+});
+
+// ════════════════════════════════════════════════════
+//  WITHDRAWALS ROUTES
+app.get('/api/withdrawals', auth, async (req, res) => {
+  const result = await pool.query(
+    'SELECT * FROM withdrawals WHERE user_id = $1 ORDER BY date ASC, id ASC',
+    [req.user.id]
+  );
+  res.json(result.rows);
+});
+
+app.post('/api/withdrawals', auth, async (req, res) => {
+  const { date, amount, note } = req.body;
+  if (!date || !amount) return res.status(400).json({ error: 'date and amount are required' });
+  if (isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) return res.status(400).json({ error: 'amount must be positive' });
+  const result = await pool.query(
+    'INSERT INTO withdrawals (user_id, date, amount, note) VALUES ($1, $2, $3, $4) RETURNING *',
+    [req.user.id, date, parseFloat(amount), note || null]
+  );
+  res.status(201).json(result.rows[0]);
+});
+
+app.post('/api/withdrawals/bulk', auth, async (req, res) => {
+  const { withdrawals } = req.body;
+  if (!Array.isArray(withdrawals)) return res.status(400).json({ error: 'withdrawals array required' });
+  const inserted = [];
+  for (const w of withdrawals) {
+    if (!w.date || !w.amount) continue;
+    const r = await pool.query(
+      'INSERT INTO withdrawals (user_id, date, amount, note) VALUES ($1, $2, $3, $4) RETURNING *',
+      [req.user.id, w.date, parseFloat(w.amount), w.note || null]
+    );
+    inserted.push(r.rows[0]);
+  }
+  res.status(201).json({ inserted: inserted.length });
+});
+
+app.delete('/api/withdrawals/:id', auth, async (req, res) => {
+  const result = await pool.query(
+    'DELETE FROM withdrawals WHERE id = $1 AND user_id = $2 RETURNING id',
+    [req.params.id, req.user.id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Withdrawal not found' });
+  res.json({ success: true });
 });
 
 // ── Global error handler ──────────────────────────

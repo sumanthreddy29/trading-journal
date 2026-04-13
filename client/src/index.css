@@ -57,6 +57,7 @@ textarea { resize: vertical; }
 .kpi-orange { border-left-color: var(--orange); }
 .kpi-red    { border-left-color: var(--red); }
 .kpi-blue   { border-left-color: var(--blue); }
+.kpi-yellow { border-left-color: var(--yellow); }
 .ppos { color: var(--green); }
 .pneg { color: var(--red); }
 .pneu { color: var(--muted); }
@@ -197,6 +198,12 @@ tbody td { padding: 10px 14px; font-size: .85rem; vertical-align: top; }
 .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
 .page-title  { font-size: 1.3rem; font-weight: 700; }
 .page-sub    { color: var(--muted); font-size: .82rem; margin-top: 2px; }
+
+/* ── Goal Banner ─────────────────────────────── */
+.goal-banner { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 22px; margin-bottom: 16px; position: relative; overflow: hidden; }
+.goal-banner::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; background: linear-gradient(90deg,var(--green),var(--cyan)); border-radius: var(--radius) var(--radius) 0 0; }
+.goal-edit-btn { background: none; border: none; cursor: pointer; font-size: .82rem; padding: 2px 4px; border-radius: 4px; line-height: 1; color: var(--muted); transition: color .15s; }
+.goal-edit-btn:hover { color: var(--text); }
 
 /* ── Toast ──────────────────────────────────── */
 .toast { position: fixed; bottom: 24px; right: 24px; padding: 12px 18px; border-radius: 10px; font-size: .85rem; font-weight: 500; z-index: 999; transition: opacity .3s; pointer-events: none; }
