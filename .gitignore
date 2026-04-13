@@ -4,3 +4,8 @@ client/node_modules/
 public/
 .DS_Store
 *.csv
+
+# Copilot / Claude agent files
+.agents/
+.claude/
+skills-lock.json
