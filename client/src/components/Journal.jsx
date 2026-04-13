@@ -72,14 +72,14 @@ export default function Journal({ trades, highlightId, onHighlightClear, onAddTr
         <table>
           <thead>
             <tr>
-              <th>Symbol</th><th>Type</th><th>Entry</th><th>Exit</th>
+              <th>Symbol</th><th>Type</th><th>Strike</th><th>Entry</th><th>Exit</th>
               <th>Qty</th><th>P&amp;L</th><th>Result</th><th>Notes</th><th>Actions</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan="9" style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>
+                <td colSpan="10" style={{ textAlign: 'center', padding: 40, color: 'var(--muted)' }}>
                   No trades match your filters.
                 </td>
               </tr>
@@ -105,6 +105,11 @@ export default function Journal({ trades, highlightId, onHighlightClear, onAddTr
                       </div>
                     </td>
                     <td><span className={`badge ${tc}`}>{t.trade_type}</span></td>
+                    <td style={{ fontSize: '.82rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                      {(t.trade_type === 'CALL' || t.trade_type === 'PUT') && t.strike_price != null
+                        ? t.strike_price
+                        : <span style={{ color: 'var(--border)' }}>—</span>}
+                    </td>
                     <td style={{ whiteSpace: 'nowrap', color: 'var(--muted)', fontSize: '.82rem' }}>{fDate(t.date_acquired)}</td>
                     <td style={{ whiteSpace: 'nowrap', color: 'var(--muted)', fontSize: '.82rem' }}>{fDate(t.date_sold)}</td>
                     <td>{t.quantity}</td>
@@ -122,7 +127,7 @@ export default function Journal({ trades, highlightId, onHighlightClear, onAddTr
 
                   {hasNotes && isOpen && (
                     <tr className="trade-expand">
-                      <td colSpan="9">
+                      <td colSpan="10">
                         <div className="expand-grid">
                           {t.entry_reason   && <div className="expand-block"><label>📌 Why I took this trade</label><p dangerouslySetInnerHTML={{ __html: esc(t.entry_reason) }} /></div>}
                           {t.market_context && <div className="expand-block"><label>🌐 Market context</label><p dangerouslySetInnerHTML={{ __html: esc(t.market_context) }} /></div>}

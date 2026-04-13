@@ -79,9 +79,9 @@ export function computeStats(trades) {
     details[d] = {
       trades:          ts,
       daily_pnl:       dpnl[d],
-      num_trades:      gts.length,
-      num_wins:        gts.filter(t => t.total_gl > 0).length,
-      num_losses:      gts.filter(t => t.total_gl < 0).length,
+      num_trades:      ts.length,
+      num_wins:        ts.filter(t => t.total_gl > 0).length,
+      num_losses:      ts.filter(t => t.total_gl < 0).length,
       total_proceeds:  r2(ts.reduce((s, t) => s + t.proceeds, 0)),
       total_cost:      r2(ts.reduce((s, t) => s + t.cost_basis, 0)),
     };

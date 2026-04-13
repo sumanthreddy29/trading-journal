@@ -1,11 +1,12 @@
 import React from 'react';
 import { fDateFull, fMoney } from '../utils/helpers.js';
-import { groupForDisplay } from '../utils/stats.js';
 
 export default function DayModal({ date, data, onClose, onTradeClick }) {
   if (!data?.details[date]) return null;
-  const dd  = data.details[date];
-  const gts = groupForDisplay(dd.trades);
+  const dd   = data.details[date];
+  const gts  = [...dd.trades].sort((a, b) => b.total_gl - a.total_gl);
+  const wins = gts.filter(t => t.total_gl > 0).length;
+  const losses = gts.filter(t => t.total_gl < 0).length;
 
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
@@ -18,15 +19,15 @@ export default function DayModal({ date, data, onClose, onTradeClick }) {
           <div style={{ display: 'flex', gap: 20, marginBottom: 16, flexWrap: 'wrap' }}>
             <div>
               <div style={{ fontSize: '.72rem', color: 'var(--muted)' }}>Trades</div>
-              <div style={{ fontSize: '1.2rem', fontWeight: 700 }}>{dd.num_trades}</div>
+              <div style={{ fontSize: '1.2rem', fontWeight: 700 }}>{gts.length}</div>
             </div>
             <div>
               <div style={{ fontSize: '.72rem', color: 'var(--muted)' }}>Wins</div>
-              <div style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--green)' }}>{dd.num_wins}</div>
+              <div style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--green)' }}>{wins}</div>
             </div>
             <div>
               <div style={{ fontSize: '.72rem', color: 'var(--muted)' }}>Losses</div>
-              <div style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--red)' }}>{dd.num_losses}</div>
+              <div style={{ fontSize: '1.2rem', fontWeight: 700, color: 'var(--red)' }}>{losses}</div>
             </div>
             <div>
               <div style={{ fontSize: '.72rem', color: 'var(--muted)' }}>Daily P&L</div>
@@ -57,7 +58,11 @@ export default function DayModal({ date, data, onClose, onTradeClick }) {
                     <span style={{ fontWeight: 700, color: w ? 'var(--green)' : 'var(--red)' }}>{fMoney(t.total_gl, true)}</span>
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 3 }}>
-                    <span style={{ fontSize: '.72rem', color: 'var(--muted)' }}>{t.trade_type} · Qty {t.quantity}</span>
+                    <span style={{ fontSize: '.72rem', color: 'var(--muted)' }}>
+                      {t.trade_type} · {(t.trade_type === 'CALL' || t.trade_type === 'PUT') && t.strike_price != null
+                        ? `Strike ${t.strike_price}`
+                        : `Qty ${t.quantity}`}
+                    </span>
                     {onTradeClick && <span style={{ fontSize: '.68rem', color: 'var(--blue)' }}>View in journal →</span>}
                   </div>
                 </div>
