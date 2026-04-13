@@ -149,9 +149,53 @@ export function computeStats(trades) {
     if (!worstMonth || monthly[k] < monthly[worstMonth]) worstMonth = k;
   });
 
+  // ── Weekly P&L ────────────────────────────────
+  const weeklyPnl = {}, weeklyLabel = {};
+  dates.forEach(d => {
+    const [m, dy, y] = d.split('/');
+    const dt = new Date(+y, +m - 1, +dy);
+    const jan1 = new Date(dt.getFullYear(), 0, 1);
+    const wn = Math.ceil(((dt - jan1) / 86400000 + jan1.getDay() + 1) / 7);
+    const wk = y + '-W' + String(wn).padStart(2, '0');
+    if (!weeklyLabel[wk]) weeklyLabel[wk] = MONTH_NAMES[+m].slice(0, 3) + ' ' + (+dy);
+    weeklyPnl[wk] = r2((weeklyPnl[wk] || 0) + dpnl[d]);
+  });
+  const weekKeys = Object.keys(weeklyPnl).sort();
+  let bestWeek = null, worstWeek = null;
+  weekKeys.forEach(k => {
+    if (!bestWeek  || weeklyPnl[k] > weeklyPnl[bestWeek])  bestWeek  = k;
+    if (!worstWeek || weeklyPnl[k] < weeklyPnl[worstWeek]) worstWeek = k;
+  });
+
+  // ── Current streak (from most recent day backward) ──
+  let currentStreak = 0, currentStreakType = 'none';
+  for (let i = dates.length - 1; i >= 0; i--) {
+    const v = dpnl[dates[i]];
+    if (currentStreak === 0) {
+      if (v > 0) { currentStreakType = 'win'; currentStreak = 1; }
+      else if (v < 0) { currentStreakType = 'loss'; currentStreak = 1; }
+      else break;
+    } else if ((currentStreakType === 'win' && v > 0) || (currentStreakType === 'loss' && v < 0)) {
+      currentStreak++;
+    } else break;
+  }
+
+  // ── Call / Put / Same-day splits ──────────────
+  const callStats = { trades: 0, pnl: 0, wins: 0 };
+  const putStats  = { trades: 0, pnl: 0, wins: 0 };
+  const sdStats   = { trades: 0, pnl: 0, wins: 0 };
+  const onStats   = { trades: 0, pnl: 0, wins: 0 };
+  trades.forEach(t => {
+    const tp = (t.trade_type || '').toUpperCase();
+    const bucket = tp === 'CALL' ? callStats : tp === 'PUT' ? putStats : null;
+    if (bucket) { bucket.trades++; bucket.pnl = r2(bucket.pnl + t.total_gl); if (t.total_gl > 0) bucket.wins++; }
+    const sd = t.same_day ? sdStats : onStats;
+    sd.trades++; sd.pnl = r2(sd.pnl + t.total_gl); if (t.total_gl > 0) sd.wins++;
+  });
+
   return {
     dates, dpnl, cum, monthly, byInst, byType, details,
-    drawdownSeries, monthlyGross,
+    drawdownSeries, monthlyGross, weeklyPnl, weeklyLabel, weekKeys,
     s: {
       totalPnl, profitDays, lossDays, totalDays: dates.length, totalTrades,
       bestDay,  bestDayPnl:  bestDay  ? dpnl[bestDay]  : 0,
@@ -162,6 +206,10 @@ export function computeStats(trades) {
       maxDrawdown, volatility, expectancy, sharpe, recoveryFactor, calmar,
       bestMonth,  bestMonthPnl:  bestMonth  ? monthly[bestMonth]  : 0, bestMonthLabel:  bestMonth  ? monthLabel(bestMonth)  : null,
       worstMonth, worstMonthPnl: worstMonth ? monthly[worstMonth] : 0, worstMonthLabel: worstMonth ? monthLabel(worstMonth) : null,
+      currentStreak, currentStreakType,
+      callStats, putStats, sdStats, onStats,
+      bestWeek,  bestWeekPnl:  bestWeek  ? weeklyPnl[bestWeek]  : 0, bestWeekLabel:  bestWeek  ? weeklyLabel[bestWeek]  : null,
+      worstWeek, worstWeekPnl: worstWeek ? weeklyPnl[worstWeek] : 0, worstWeekLabel: worstWeek ? weeklyLabel[worstWeek] : null,
     },
   };
 }

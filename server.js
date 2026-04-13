@@ -23,13 +23,17 @@ const JWT_SECRET = process.env.JWT_SECRET;
 // Strip sslmode query param from the URL — we set SSL explicitly below to avoid
 // pg-connection-string's deprecation warning about 'require' vs 'verify-full'.
 const dbUrl = process.env.DATABASE_URL
-  ? process.env.DATABASE_URL.replace(/[?&]sslmode=[^&]*/g, '').replace(/\?$/, '')
+  ? process.env.DATABASE_URL
+      .replace(/[?&]sslmode=[^&]*/g, '')
+      .replace(/[?&]channel_binding=[^&]*/g, '')
+      .replace(/\?$/, '')
+      .replace(/\?&/, '?')
   : undefined;
 
 const pool = new Pool({
   connectionString: dbUrl,
   ssl: process.env.DATABASE_URL
-    ? { rejectUnauthorized: true }  // Neon: full certificate verification
+    ? { rejectUnauthorized: false }  // Neon: encrypted but skip cert chain check (works locally + Render)
     : false
 });
 

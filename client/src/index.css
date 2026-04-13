@@ -75,6 +75,7 @@ canvas { width: 100%; display: block; }
 /* ── Layout helpers ─────────────────────────── */
 .three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-bottom: 14px; }
 .two-col   { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 14px; }
+.three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-bottom: 14px; align-items: start; }
 
 /* ── By Instrument table ────────────────────── */
 .inst-table { width: 100%; border-collapse: collapse; margin-top: 4px; }
@@ -215,7 +216,7 @@ tbody td { padding: 10px 14px; font-size: .85rem; vertical-align: top; }
 #lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.92); display: flex; align-items: center; justify-content: center; z-index: 200; cursor: zoom-out; }
 #lightbox img { max-width: 90vw; max-height: 90vh; border-radius: 8px; }
 
-/* ── Mobile ─────────────────────────────────── */
+/* ── Mobile ──────────────────────────────────── */
 #mobile-nav { display: none; }
 @media (max-width: 800px) {
   #sidebar { display: none; }
@@ -230,7 +231,8 @@ tbody td { padding: 10px 14px; font-size: .85rem; vertical-align: top; }
   .mob-btn.add    { color: #fff; background: var(--blue); border-radius: 12px; margin: 0 8px; }
   #main { padding: 16px 12px 80px; }
   .kpi-row-1, .kpi-row-2 { grid-template-columns: 1fr 1fr; }
-  .three-col, .two-col   { grid-template-columns: 1fr; }
+  .two-col   { grid-template-columns: 1fr; }
+  .three-col { grid-template-columns: 1fr; }
   .form-row, .form-row.cols3 { grid-template-columns: 1fr; }
   .pnl-preview    { gap: 10px; }
   .expand-grid    { grid-template-columns: 1fr; }

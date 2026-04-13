@@ -406,6 +406,43 @@ export default function Analytics({ trades, data }) {
         )}
       </div>
 
+      {/* ── Monthly Gross Breakdown ── */}
+      {data?.monthlyGross && Object.keys(data.monthlyGross).length > 0 && (() => {
+        const grossKeys = Object.keys(data.monthlyGross).sort().reverse();
+        return (
+          <div className="chart-card" style={{ marginBottom: 14, overflowX: 'auto' }}>
+            <SectionHeader dot="var(--purple)" title="Monthly Gross Breakdown" />
+            <table style={{ width: '100%', fontSize: '.82rem', borderCollapse: 'collapse', minWidth: 480 }}>
+              <thead>
+                <tr style={{ color: 'var(--muted)', fontSize: '.68rem', textTransform: 'uppercase', letterSpacing: '.05em' }}>
+                  <th style={{ textAlign: 'left', padding: '6px 10px 10px' }}>Month</th>
+                  <th style={{ textAlign: 'right', padding: '6px 10px 10px', color: 'var(--green)' }}>Gross Profit</th>
+                  <th style={{ textAlign: 'right', padding: '6px 10px 10px', color: 'var(--red)' }}>Gross Loss</th>
+                  <th style={{ textAlign: 'right', padding: '6px 10px 10px' }}>Net P&L</th>
+                  <th style={{ textAlign: 'center', padding: '6px 10px 10px', color: 'var(--green)' }}>Win Days</th>
+                  <th style={{ textAlign: 'center', padding: '6px 10px 10px', color: 'var(--red)' }}>Loss Days</th>
+                </tr>
+              </thead>
+              <tbody>
+                {grossKeys.map(k => {
+                  const g = data.monthlyGross[k];
+                  return (
+                    <tr key={k} style={{ borderTop: '1px solid var(--border)' }}>
+                      <td style={{ padding: '8px 10px', fontWeight: 600 }}>{monthLabel(k)}</td>
+                      <td style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--green)', fontWeight: 600 }}>{g.grossProfit > 0 ? fMoney(g.grossProfit, true) : '—'}</td>
+                      <td style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--red)',   fontWeight: 600 }}>{g.grossLoss < 0 ? fMoney(g.grossLoss, true) : '—'}</td>
+                      <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color: g.net >= 0 ? 'var(--green)' : 'var(--red)' }}>{fMoney(g.net, true)}</td>
+                      <td style={{ padding: '8px 10px', textAlign: 'center', color: 'var(--green)' }}>{g.winDays}</td>
+                      <td style={{ padding: '8px 10px', textAlign: 'center', color: 'var(--red)' }}>{g.lossDays}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        );
+      })()}
+
       {/* ── Tags / Setups ── */}
       <div className="chart-card" style={{ marginBottom: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>

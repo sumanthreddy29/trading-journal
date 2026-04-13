@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
-import { fMoney, fDate, fY, symBadgeClass } from '../utils/helpers.js';
-import { drawLine, drawBars, drawMonthly, drawDonut, drawDrawdown } from '../utils/canvas.js';
+import { fMoney, fDate, fY } from '../utils/helpers.js';
+import { drawLine, drawBars, drawDonut, drawDrawdown } from '../utils/canvas.js';
 import { API } from '../api.js';
 
 const MONTHS_SHORT = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -232,10 +232,13 @@ function GoalTracker({ goals, withdrawals, totalPnl, avgDailyPnl, onGoalsChange 
 export default function Dashboard({ data, settings, withdrawals, goals, onGoalsChange, onRefresh, onDayClick, onSettingsChange }) {
   const cumulRef    = useRef(null);
   const dailyRef    = useRef(null);
-  const monthlyRef  = useRef(null);
   const donutRef    = useRef(null);
   const drawdownRef = useRef(null);
+  const weeklyRef   = useRef(null);
   const [cumulFilter, setCumulFilter] = useState('ALL');
+  const [kpiCompact, setKpiCompact] = useState(() => localStorage.getItem('tj_kpi_compact') === '1');
+  const toggleCompact = () => setKpiCompact(c => { const nc = !c; localStorage.setItem('tj_kpi_compact', nc ? '1' : '0'); return nc; });
+  const todayStr = useMemo(() => { const t = new Date(); return String(t.getMonth() + 1).padStart(2, '0') + '/' + String(t.getDate()).padStart(2, '0') + '/' + t.getFullYear(); }, []);
 
   const filteredCumul = useMemo(() => {
     if (!data) return { labels: [], vals: [] };
@@ -272,20 +275,25 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
     return { labels, vals: vals2 };
   }, [data, cumulFilter]);
 
+  const weeklyChartData = useMemo(() => {
+    if (!data || !data.weeklyPnl) return { labels: [], vals: [] };
+    const { weeklyPnl, weeklyLabel, weekKeys } = data;
+    const last12 = weekKeys.slice(-12);
+    return { labels: last12.map(k => weeklyLabel[k] || k), vals: last12.map(k => weeklyPnl[k]) };
+  }, [data]);
+
   useEffect(() => {
     if (!data) return;
-    const { dates, dpnl, monthly, byType, drawdownSeries } = data;
+    const { dates, dpnl, byType, drawdownSeries } = data;
     const dailyLabels = dates.map(d => { const p = d.split('/'); return MONTHS_SHORT[+p[0]] + ' ' + parseInt(p[1]); });
 
     drawLine(cumulRef.current,   'cumul',   filteredCumul.labels, filteredCumul.vals, 240);
     drawBars(dailyRef.current,   'daily',   dailyLabels, dates.map(d => dpnl[d]), 220);
     drawDrawdown(drawdownRef.current, 'dd', dailyLabels, drawdownSeries, 150);
-    const mk   = Object.keys(monthly).sort();
-    const mLbl = mk.map(k => { const p = k.split('-'); return MONTHS_SHORT[+p[1]] + ' ' + p[0]; });
-    drawMonthly(monthlyRef.current, mLbl, mk.map(k => monthly[k]), 180);
     const typeK = Object.keys(byType);
     drawDonut(donutRef.current, typeK.map(k => byType[k].trades), DONUT_COLORS, 180);
-  }, [data, filteredCumul]);
+    if (weeklyChartData.vals.length > 0) drawBars(weeklyRef.current, 'weekly', weeklyChartData.labels, weeklyChartData.vals, 180);
+  }, [data, filteredCumul, weeklyChartData]);
 
   const header = (
     <div className="page-header">
@@ -295,16 +303,22 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
           {data ? `${fDate(data.dates[0])} – ${fDate(data.dates[data.dates.length - 1])}` : 'No trades yet.'}
         </div>
       </div>
-      <button className="action-btn" onClick={onRefresh} style={{ padding: '7px 14px' }}>↻ Refresh</button>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <button className="action-btn" onClick={toggleCompact} title={kpiCompact ? 'Expand KPIs' : 'Compact KPIs'} style={{ padding: '7px 12px' }}>
+          {kpiCompact ? '⊞ Expand' : '⊟ Compact'}
+        </button>
+        <button className="action-btn" onClick={onRefresh} style={{ padding: '7px 14px' }}>↻ Refresh</button>
+      </div>
     </div>
   );
 
   if (!data) return <div>{header}</div>;
 
-  const { dates, dpnl, monthly, monthlyGross, byInst, byType, details, s } = data;
-  const typeK     = Object.keys(byType);
-  const typeTotal = typeK.reduce((sum, k) => sum + byType[k].trades, 0) || 1;
-  const instK     = Object.keys(byInst).sort((a, b) => byInst[b].pnl - byInst[a].pnl);
+  const { dates, dpnl, byType, details, s } = data;
+  const typeK      = Object.keys(byType);
+  const typeTotal  = typeK.reduce((sum, k) => sum + byType[k].trades, 0) || 1;
+  const todayPnl   = dpnl[todayStr];
+  const dailyTarget = parseFloat(settings?.daily_target || 0);
 
   // Compute withdrawn amounts grouped by source
   const withdrawnBySource = (withdrawals || []).reduce((acc, w) => {
@@ -335,9 +349,6 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
     { lbl: 'Recovery Factor',  val: <span style={{ fontWeight: 600, color: 'var(--orange)' }}>{s.recoveryFactor ?? '—'}</span> },
   ];
 
-  // Monthly gross breakdown sorted
-  const grossKeys = Object.keys(monthlyGross || {}).sort().reverse();
-
   return (
     <div>
       {header}
@@ -351,6 +362,72 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
         onGoalsChange={onGoalsChange}
       />
 
+
+      {/* Settings + Daily Target strip */}
+      <div className="chart-card" style={{ marginBottom: 14, padding: '12px 18px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
+
+          {/* Start Balance */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: '1rem' }}>🏦</span>
+            <div>
+              <div style={{ fontSize: '.68rem', textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted)', marginBottom: 2 }}>Start Balance</div>
+              <div style={{ fontWeight: 700, fontSize: '.95rem', color: 'var(--cyan)' }}>
+                {settings?.start_balance ? fMoney(parseFloat(settings.start_balance)) : <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Not set</span>}
+              </div>
+            </div>
+            <button onClick={() => { const v = prompt('Starting account balance ($):', settings?.start_balance || ''); if (v !== null && v !== '' && !isNaN(+v)) onSettingsChange('start_balance', v); }}
+              style={{ padding: '4px 9px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--muted)', cursor: 'pointer', fontSize: '.72rem' }}>
+              ✏️
+            </button>
+          </div>
+
+          <div style={{ width: 1, height: 32, background: 'var(--border)', flexShrink: 0 }} />
+
+          {/* Current Balance */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: '1rem' }}>💰</span>
+            <div>
+              <div style={{ fontSize: '.68rem', textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted)', marginBottom: 2 }}>Current Balance</div>
+              {settings?.start_balance ? (() => {
+                const bal = parseFloat(settings.start_balance) + s.totalPnl - totalWithdrawn;
+                return (
+                  <div style={{ fontWeight: 700, fontSize: '.95rem', color: bal >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                    {fMoney(bal)}
+                    <div style={{ fontSize: '.68rem', color: 'var(--muted)', fontWeight: 400, marginTop: 1 }}>Start + P&amp;L − Withdrawn</div>
+                  </div>
+                );
+              })() : <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: '.88rem' }}>Set start balance</span>}
+            </div>
+          </div>
+
+          <div style={{ width: 1, height: 32, background: 'var(--border)', flexShrink: 0 }} />
+
+          {/* Daily Target */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 200 }}>
+            <span style={{ fontSize: '1rem' }}>🎯</span>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '.68rem', textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted)', marginBottom: 2 }}>Today P&amp;L</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontWeight: 700, fontSize: '.95rem', color: todayPnl != null ? (todayPnl >= 0 ? 'var(--green)' : 'var(--red)') : 'var(--muted)' }}>
+                  {todayPnl != null ? fMoney(todayPnl, true) : 'No trades today'}
+                </span>
+                {dailyTarget > 0 && <span style={{ fontSize: '.75rem', color: 'var(--muted)' }}>/ {fMoney(dailyTarget)} target</span>}
+              </div>
+              {dailyTarget > 0 && todayPnl != null && (
+                <div style={{ marginTop: 4, background: 'var(--surface2)', borderRadius: 4, height: 5, overflow: 'hidden', minWidth: 80, maxWidth: 200 }}>
+                  <div style={{ height: '100%', borderRadius: 4, width: Math.min(100, Math.max(0, todayPnl / dailyTarget * 100)) + '%', background: todayPnl >= dailyTarget ? 'var(--green)' : 'var(--blue)', transition: 'width .4s' }} />
+                </div>
+              )}
+            </div>
+            <button onClick={() => { const v = prompt('Daily P&L target ($):', dailyTarget || ''); if (v !== null && v !== '' && !isNaN(+v)) onSettingsChange('daily_target', v); }}
+              style={{ padding: '4px 9px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--muted)', cursor: 'pointer', fontSize: '.72rem' }}>
+              {dailyTarget > 0 ? '✏️' : '+ Target'}
+            </button>
+          </div>
+
+        </div>
+      </div>
       {/* KPI Row 1 */}
       <div className="kpi-row kpi-row-1">
         <div className="kpi lg kpi-green">
@@ -375,6 +452,42 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
         </div>
       </div>
 
+      {/* Streak + Best/Worst Week */}
+      {!kpiCompact && (
+        <div className="kpi-row kpi-row-2">
+          <div className={`kpi ${s.currentStreakType === 'win' ? 'kpi-green' : s.currentStreakType === 'loss' ? 'kpi-red' : 'kpi-blue'}`}>
+            <div className="kpi-lbl">Current Streak</div>
+            <div className={`kpi-val ${s.currentStreakType === 'win' ? 'ppos' : s.currentStreakType === 'loss' ? 'pneg' : ''}`}>
+              {s.currentStreakType === 'win' ? '🔥' : s.currentStreakType === 'loss' ? '📉' : '—'}{' '}
+              {s.currentStreak > 0 ? s.currentStreak + (s.currentStreakType === 'win' ? ' wins' : ' losses') : ''}
+            </div>
+            <div className="kpi-sub">Max: {s.mw}W · {s.ml}L all-time</div>
+          </div>
+          <div className="kpi kpi-green">
+            <div className="kpi-lbl">Best Week</div>
+            <div className="kpi-val ppos">{s.bestWeekLabel ? fMoney(s.bestWeekPnl, true) : '—'}</div>
+            <div className="kpi-sub">{s.bestWeekLabel || 'No data'}</div>
+          </div>
+          <div className="kpi kpi-red">
+            <div className="kpi-lbl">Worst Week</div>
+            <div className="kpi-val pneg">{s.worstWeekLabel ? fMoney(s.worstWeekPnl, true) : '—'}</div>
+            <div className="kpi-sub">{s.worstWeekLabel || 'No data'}</div>
+          </div>
+          <div className="kpi kpi-blue">
+            <div className="kpi-lbl">Options (C / P)</div>
+            <div className="kpi-val" style={{ fontSize: '.95rem' }}>
+              <span style={{ color: 'var(--blue)' }}>{s.callStats.trades}C</span> · <span style={{ color: 'var(--purple)' }}>{s.putStats.trades}P</span>
+            </div>
+            <div className="kpi-sub">
+              {s.callStats.trades > 0 ? Math.round(s.callStats.wins / s.callStats.trades * 100) + '%C' : ''}
+              {s.callStats.trades > 0 && s.putStats.trades > 0 ? ' · ' : ''}
+              {s.putStats.trades > 0 ? Math.round(s.putStats.wins / s.putStats.trades * 100) + '%P' : ''} win rate
+            </div>
+          </div>
+        </div>
+      )}
+
+      {!kpiCompact && (<>
       {/* KPI Row 2 */}
       <div className="kpi-row kpi-row-2">
         <div className="kpi kpi-green">
@@ -457,6 +570,7 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
           <div className="kpi-sub">P&amp;L ÷ Max Drawdown</div>
         </div>
       </div>
+      </>)}
 
       {/* Cumulative P&L with time filter */}
       <div className="chart-card">
@@ -500,6 +614,15 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
           </div>
         </div>
         <canvas ref={dailyRef} />
+      </div>
+
+      <div className="chart-card">
+        <div className="chart-hdr">
+          <div className="chart-dot" style={{ background: 'var(--orange)' }} />
+          <div className="chart-title">Weekly P&amp;L</div>
+          <div className="chart-legend"><span style={{ color: 'var(--muted)', fontSize: '.75rem' }}>Last {weeklyChartData.labels.length} weeks</span></div>
+        </div>
+        <canvas ref={weeklyRef} />
       </div>
 
       {/* Calendar */}
@@ -557,81 +680,8 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
         </div>
       </div>
 
-      {/* Monthly Gross Breakdown */}
-      {grossKeys.length > 0 && (
-        <div className="chart-card" style={{ marginBottom: 14, overflowX: 'auto' }}>
-          <div className="chart-hdr">
-            <div className="chart-dot" style={{ background: 'var(--purple)' }} />
-            <div className="chart-title">Monthly Gross Breakdown</div>
-            <div className="chart-legend"><span style={{ fontSize: '.72rem', color: 'var(--muted)' }}>Gross profits/losses before netting</span></div>
-          </div>
-          <table style={{ width: '100%', fontSize: '.82rem', borderCollapse: 'collapse', minWidth: 480 }}>
-            <thead>
-              <tr style={{ color: 'var(--muted)', fontSize: '.68rem', textTransform: 'uppercase', letterSpacing: '.05em' }}>
-                <th style={{ textAlign: 'left', padding: '6px 10px 10px' }}>Month</th>
-                <th style={{ textAlign: 'right', padding: '6px 10px 10px', color: 'var(--green)' }}>Gross Profit</th>
-                <th style={{ textAlign: 'right', padding: '6px 10px 10px', color: 'var(--red)' }}>Gross Loss</th>
-                <th style={{ textAlign: 'right', padding: '6px 10px 10px' }}>Net P&amp;L</th>
-                <th style={{ textAlign: 'center', padding: '6px 10px 10px', color: 'var(--green)' }}>Win Days</th>
-                <th style={{ textAlign: 'center', padding: '6px 10px 10px', color: 'var(--red)' }}>Loss Days</th>
-              </tr>
-            </thead>
-            <tbody>
-              {grossKeys.map(k => {
-                const g = monthlyGross[k];
-                const [y, m] = k.split('-');
-                const lbl = MONTHS_SHORT[+m] + ' ' + y;
-                return (
-                  <tr key={k} style={{ borderTop: '1px solid var(--border)' }}>
-                    <td style={{ padding: '8px 10px', fontWeight: 600 }}>{lbl}</td>
-                    <td style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--green)', fontWeight: 600 }}>{g.grossProfit > 0 ? fMoney(g.grossProfit, true) : '—'}</td>
-                    <td style={{ padding: '8px 10px', textAlign: 'right', color: 'var(--red)',   fontWeight: 600 }}>{g.grossLoss < 0 ? fMoney(g.grossLoss, true) : '—'}</td>
-                    <td style={{ padding: '8px 10px', textAlign: 'right', fontWeight: 700, color: g.net >= 0 ? 'var(--green)' : 'var(--red)' }}>{fMoney(g.net, true)}</td>
-                    <td style={{ padding: '8px 10px', textAlign: 'center', color: 'var(--green)' }}>{g.winDays}</td>
-                    <td style={{ padding: '8px 10px', textAlign: 'center', color: 'var(--red)' }}>{g.lossDays}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {/* Three-column row */}
+      {/* Performance + Call vs Put + Trade Type */}
       <div className="three-col">
-        {/* By Instrument */}
-        <div className="chart-card no-mb">
-          <div className="chart-hdr">
-            <div className="chart-dot" style={{ background: 'var(--blue)' }} />
-            <div className="chart-title">By Instrument</div>
-          </div>
-          <table className="inst-table">
-            <thead><tr><th>Symbol</th><th>Trades</th><th>P&amp;L</th></tr></thead>
-            <tbody>
-              {instK.map(sym => {
-                const d = byInst[sym];
-                return (
-                  <tr key={sym}>
-                    <td><span className={`badge ${symBadgeClass(sym)}`}>{sym}</span></td>
-                    <td>{d.trades}</td>
-                    <td className={d.pnl >= 0 ? 'ppos' : 'pneg'} style={{ fontWeight: 600 }}>{fMoney(d.pnl, true)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-
-        {/* Monthly P&L */}
-        <div className="chart-card no-mb">
-          <div className="chart-hdr">
-            <div className="chart-dot" style={{ background: 'var(--orange)' }} />
-            <div className="chart-title">Monthly P&amp;L</div>
-          </div>
-          <canvas ref={monthlyRef} />
-        </div>
-
-        {/* Performance */}
         <div className="chart-card no-mb">
           <div className="chart-hdr">
             <div className="chart-dot" style={{ background: 'var(--yellow)' }} />
@@ -653,18 +703,47 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
             ))}
           </div>
         </div>
-      </div>
 
-      {/* Trade Type Donut */}
-      <div style={{ marginTop: 14 }}>
-        <div className="chart-card no-mb" style={{ maxWidth: 480 }}>
+        <div className="chart-card no-mb">
+          <div className="chart-hdr">
+            <div className="chart-dot" style={{ background: 'var(--blue)' }} />
+            <div className="chart-title">Call vs Put</div>
+          </div>
+          <table style={{ width: '100%', fontSize: '.82rem', borderCollapse: 'collapse' }}>
+            <thead><tr style={{ color: 'var(--muted)', fontSize: '.68rem', textTransform: 'uppercase' }}>
+              <th style={{ textAlign: 'left', padding: '4px 8px 8px' }}>Type</th>
+              <th style={{ textAlign: 'right', padding: '4px 8px 8px' }}>Trades</th>
+              <th style={{ textAlign: 'right', padding: '4px 8px 8px' }}>Win%</th>
+              <th style={{ textAlign: 'right', padding: '4px 8px 8px' }}>Net P&amp;L</th>
+            </tr></thead>
+            <tbody>
+              {[
+                { lbl: '📈 CALLs', color: 'var(--blue)', d: s.callStats },
+                { lbl: '📉 PUTs',  color: 'var(--purple)', d: s.putStats },
+              ].filter(r => r.d.trades > 0).map(({ lbl, color, d }) => (
+                <tr key={lbl} style={{ borderTop: '1px solid var(--border)' }}>
+                  <td style={{ padding: '9px 8px', fontWeight: 600, color }}>{lbl}</td>
+                  <td style={{ padding: '9px 8px', textAlign: 'right' }}>{d.trades}</td>
+                  <td style={{ padding: '9px 8px', textAlign: 'right', color: d.wins / (d.trades || 1) >= 0.5 ? 'var(--green)' : 'var(--red)' }}>
+                    {Math.round(d.wins / (d.trades || 1) * 100)}%
+                  </td>
+                  <td style={{ padding: '9px 8px', textAlign: 'right', fontWeight: 700, color: d.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                    {fMoney(d.pnl, true)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="chart-card no-mb">
           <div className="chart-hdr">
             <div className="chart-dot" style={{ background: 'var(--purple)' }} />
             <div className="chart-title">Trade Type Distribution</div>
           </div>
           <div className="donut-wrap">
             <div className="donut-canvas-wrap">
-              <canvas ref={donutRef} style={{ width: 180, height: 180 }} />
+              <canvas ref={donutRef} style={{ width: 140, height: 140 }} />
             </div>
             <div className="donut-legend">
               {typeK.map((k, i) => (
@@ -682,6 +761,7 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
           </div>
         </div>
       </div>
+
     </div>
   );
 }
