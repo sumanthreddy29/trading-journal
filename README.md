@@ -7,8 +7,8 @@ A full-stack personal trading journal with multi-user auth, a comprehensive anal
 ## Features
 
 ### Dashboard
-- **Goal Tracker** — set a P&L goal, track progress with a live progress bar, days remaining, required daily pace, and Fidelity/RH withdrawal tracking
-- **16 KPIs** — Total P&L, Win Rate, Total Trades, Avg Daily P&L, Best/Worst Day, Avg Win/Loss Day, Max Drawdown, Expectancy, Best/Worst Month, Fidelity Withdrawn, RH Withdrawn, Volatility, Recovery Factor
+- **Multi-Goal Tracker** — create multiple named goals with target amounts, start/end dates, and notes. Switch between goals, activate/deactivate, edit or delete — all from the dashboard UI. Progress bar, days remaining to end date, required daily pace, and per-broker withdrawal totals
+- **16 KPIs** — Total P&L, Win Rate, Total Trades, Avg Daily P&L, Best/Worst Day, Avg Win/Loss Day, Max Drawdown, Expectancy, Best/Worst Month, Withdrawn by Broker, Volatility, Recovery Factor
 - **Cumulative P&L chart** with time filters (1D / 1W / 1M / 3M / YTD / ALL)
 - **Drawdown chart** — peak-to-trough drawdown over time
 - **Daily P&L bar chart**, **Monthly bar chart**, **By Instrument donut chart**, **P&L calendar**
@@ -30,17 +30,52 @@ A full-stack personal trading journal with multi-user auth, a comprehensive anal
 
 ### Import CSV
 - Drag-and-drop or file-picker CSV import
-- Auto-detects format: **Trades**, **Settings**, or **Withdrawals**
-- Preview of first 3 rows before importing
+- Auto-detects format: **Trades** or **Withdrawals** from column headers
+- Preview of first 3 rows before committing import
 - Import results summary (records imported / failed)
+- Goals are managed directly from the Dashboard UI (no CSV import needed)
 
-**Supported CSV formats:**
+#### Trades CSV
 
-| Format | Required columns |
-|--------|-----------------|
-| Trades | `symbol, date_acquired, date_sold, proceeds, cost_basis, total_gl, trade_type` |
-| Settings | `key, value` (keys: `tj_goal`, `tj_start_bal`, `tj_curr_bal`, `tj_rh_withdrawn`) |
-| Withdrawals | `date` (MM/DD/YYYY), `amount` |
+Two column naming conventions are accepted — the importer maps both automatically:
+
+| App field | Primary column | Alternate column |
+|-----------|---------------|-----------------|
+| symbol | `symbol` | `symbol` |
+| trade_type | `trade_type` | `trade_type` |
+| quantity | `quantity` | `quantity` |
+| date_acquired | `date_acquired` | `buy_date` |
+| date_sold | `date_sold` | `sell_date` |
+| cost_basis | `cost_basis` | `buy_amount` |
+| proceeds | `proceeds` | `sell_amount` |
+| total_gl | `total_gl` | `net_pnl` |
+| base_symbol | `base_symbol` | `full_symbol` (parenthetical stripped) |
+| same_day | derived from dates | `same_day` (Yes/true) |
+
+Optional columns (all ignored if absent): `description`, `lt_gl`, `st_gl`, `tags`, `entry_reason`, `market_context`, `exit_notes`, `failure_reason`
+
+**Example:**
+```csv
+symbol,trade_type,quantity,buy_date,sell_date,buy_amount,sell_amount,net_pnl,source,full_symbol,description
+NDXP,CALL,1,01/23/2026,01/23/2026,4100.67,4299.33,198.66,csv,NDXP260123C25600,CALL NDXP JAN 23 26 $25600
+NVDA,STOCK,10,03/14/2025,02/02/2026,1192.50,1885.40,692.90,csv,NVDA,NVIDIA CORPORATION
+```
+
+#### Withdrawals CSV
+
+| Column | Required | Description |
+|--------|----------|-------------|
+| `date` | ✅ | MM/DD/YYYY |
+| `amount` | ✅ | Positive number |
+| `source` | optional | Broker name: `fidelity`, `robinhood`, or any string (defaults to `fidelity`) |
+| `note` | optional | Free-text note; also accepted as `description` |
+
+**Example:**
+```csv
+date,amount,source,note
+01/12/2026,2000,fidelity,Weekly withdrawal
+02/04/2026,800,robinhood,
+```
 
 ### Export
 - Export trades as CSV or JSON with optional date range filtering
@@ -181,7 +216,7 @@ trading-journal/
     │   │   ├── Analytics.jsx       # Deep-dive analytics charts
     │   │   ├── Journal.jsx         # Trade table + detail rows
     │   │   ├── TradeForm.jsx       # Add / edit trade form
-    │   │   ├── Import.jsx          # CSV import (trades/settings/withdrawals)
+    │   │   ├── Import.jsx          # CSV import (trades + withdrawals only)
     │   │   ├── Export.jsx          # CSV/JSON export
     │   │   ├── Rules.jsx           # Trading playbook
     │   │   ├── DayModal.jsx        # Day-level trade breakdown modal
@@ -223,13 +258,22 @@ All routes require `Authorization: Bearer <token>` except `/api/register` and `/
 | POST | `/api/settings` | `{key, value}` | Upsert single setting |
 | POST | `/api/settings/bulk` | `{settings: {key: value}}` | Upsert multiple settings |
 
+### Goals
+| Method | Path | Body | Description |
+|--------|------|------|-------------|
+| GET | `/api/goals` | — | All goals (active first) |
+| POST | `/api/goals` | `{name, target_amount, start_date?, end_date?, notes?, is_active?}` | Create goal |
+| PUT | `/api/goals/:id` | `{name, target_amount, start_date?, end_date?, notes?}` | Update goal |
+| POST | `/api/goals/:id/activate` | — | Set as active goal (deactivates others) |
+| DELETE | `/api/goals/:id` | — | Delete goal (auto-promotes next if active) |
+
 ### Withdrawals
 | Method | Path | Body | Description |
 |--------|------|------|-------------|
 | GET | `/api/withdrawals` | — | All withdrawals |
-| POST | `/api/withdrawals` | `{date, amount, note?}` | Add withdrawal |
-| POST | `/api/withdrawals/bulk` | `{withdrawals: [{date, amount}]}` | Import multiple |
-| PUT | `/api/withdrawals/:id` | `{date, amount, note?}` | Update withdrawal |
+| POST | `/api/withdrawals` | `{date, amount, source?, note?}` | Add withdrawal |
+| POST | `/api/withdrawals/bulk` | `{withdrawals: [{date, amount, source?, note?}]}` | Import multiple |
+| PUT | `/api/withdrawals/:id` | `{date, amount, source?, note?}` | Update withdrawal |
 | DELETE | `/api/withdrawals/:id` | — | Delete withdrawal |
 
 ---
@@ -237,71 +281,5 @@ All routes require `Authorization: Bearer <token>` except `/api/register` and `/
 ## License
 
 MIT
-
-
-## API Reference
-
-All trade endpoints require `Authorization: Bearer <token>` header.
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | `/api/register` | Create account `{username, password, email?}` |
-| POST | `/api/login` | Login `{username, password}` → `{token, username}` |
-| GET | `/api/trades` | Get all your trades |
-| POST | `/api/trades` | Add a trade |
-| PUT | `/api/trades/:id` | Update a trade |
-| DELETE | `/api/trades/:id` | Delete a trade |
-| GET | `/api/stats` | Summary stats |
-
-### Trade object fields
-
-```json
-{
-  "symbol": "NDX",
-  "base_symbol": "NDX",
-  "description": "CALL (NDX) NASDAQ 100 INDEX...",
-  "trade_type": "CALL",
-  "quantity": 1,
-  "buy_price": 15.20,
-  "sell_price": 18.50,
-  "date_acquired": "01/15/2026",
-  "date_sold": "01/15/2026",
-  "proceeds": 1843.35,
-  "cost_basis": 1526.65,
-  "total_gl": 316.70,
-  "same_day": true,
-  "is_ndx": true,
-  "lt_gl": 190.02,
-  "st_gl": 126.68,
-  "status": "closed",
-  "entry_reason": "Strong support hold at 21500, momentum entry",
-  "market_context": "Market recovering after CPI miss, NDX bouncing",
-  "exit_notes": "Exited at target, clean move",
-  "failure_reason": null,
-  "screenshot_b64": "data:image/png;base64,...",
-  "tags": "momentum,support"
-}
-```
-
----
-
-## File Structure
-
-```
-trading-journal-server/
-├── server.js          ← Express backend, API routes, SQLite
-├── package.json       ← Dependencies
-├── .env.example       ← Environment variable template
-├── data/
-│   └── journal.db     ← SQLite database (auto-created)
-└── public/
-    └── index.html     ← Full single-page app (login + dashboard)
-```
-
----
-
-## Backup
-
-Your entire journal lives in one file: `data/journal.db`
 
 To back it up: `cp data/journal.db data/journal_backup_$(date +%Y%m%d).db`

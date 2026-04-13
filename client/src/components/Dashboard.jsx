@@ -1,74 +1,235 @@
-import React, { useEffect, useRef, useState, useMemo } from 'react';
+import React, { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { fMoney, fDate, fY, symBadgeClass } from '../utils/helpers.js';
 import { drawLine, drawBars, drawMonthly, drawDonut, drawDrawdown } from '../utils/canvas.js';
+import { API } from '../api.js';
 
 const MONTHS_SHORT = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 const MONTHS_FULL  = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
 const DONUT_COLORS = ['#3b82f6','#a855f7','#eab308','#22c55e','#06b6d4'];
 
-// ── Goal Tracker ──────────────────────────────────
-function GoalTracker({ settings, withdrawals, totalPnl, avgDailyPnl, onSettingsChange }) {
-  const goal        = parseFloat(settings?.tj_goal     || 50000);
-  const startBal    = parseFloat(settings?.tj_start_bal || 0);
-  const rhWithdrawn = parseFloat(settings?.tj_rh_withdrawn || 0);
-  const fidWithdrawn = (withdrawals || []).reduce((s, w) => s + w.amount, 0);
-  const totalWithdrawn = fidWithdrawn + rhWithdrawn;
-  const earned   = totalPnl || 0;
-  const pct      = goal > 0 ? Math.min(100, Math.max(0, (earned / goal) * 100)) : 0;
-  const needed   = Math.max(0, goal - earned);
+// ── Goal Form Modal ───────────────────────────────
+function GoalForm({ initial, onSave, onCancel }) {
+  const [name,   setName]   = useState(initial?.name          || '');
+  const [target, setTarget] = useState(initial?.target_amount || '');
+  const [start,  setStart]  = useState(initial?.start_date    || '');
+  const [end,    setEnd]    = useState(initial?.end_date       || '');
+  const [notes,  setNotes]  = useState(initial?.notes         || '');
 
-  // Trading days left in calendar year
-  const today = new Date();
-  const yearEnd = new Date(today.getFullYear(), 11, 31);
+  const iS = { background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 10px', color: 'var(--text)', fontSize: '.85rem', width: '100%', boxSizing: 'border-box' };
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 300 }}>
+      <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 12, padding: 24, width: 380, maxWidth: '95vw' }}>
+        <div style={{ fontWeight: 700, fontSize: '1rem', marginBottom: 16 }}>{initial ? 'Edit Goal' : 'New Goal'}</div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <div><label style={{ fontSize: '.75rem', color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Goal Name *</label>
+            <input style={iS} value={name} onChange={e => setName(e.target.value)} placeholder="e.g. 2026 Annual Goal" />
+          </div>
+          <div><label style={{ fontSize: '.75rem', color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Target Amount ($) *</label>
+            <input style={iS} type="number" value={target} onChange={e => setTarget(e.target.value)} placeholder="50000" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div><label style={{ fontSize: '.75rem', color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Start Date</label>
+              <input style={iS} type="date" value={start} onChange={e => setStart(e.target.value)} />
+            </div>
+            <div><label style={{ fontSize: '.75rem', color: 'var(--muted)', display: 'block', marginBottom: 4 }}>End Date</label>
+              <input style={iS} type="date" value={end} onChange={e => setEnd(e.target.value)} />
+            </div>
+          </div>
+          <div><label style={{ fontSize: '.75rem', color: 'var(--muted)', display: 'block', marginBottom: 4 }}>Notes</label>
+            <textarea style={{ ...iS, resize: 'vertical', minHeight: 60 }} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optional notes…" />
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 8, marginTop: 16 }}>
+          <button onClick={() => onSave({ name, target_amount: parseFloat(target), start_date: start || null, end_date: end || null, notes: notes || null })}
+            disabled={!name.trim() || !target}
+            style={{ flex: 1, padding: '9px 0', background: 'linear-gradient(90deg,var(--blue),var(--purple))', border: 'none', borderRadius: 7, color: '#fff', fontWeight: 700, cursor: 'pointer', fontSize: '.85rem' }}>
+            {initial ? 'Save Changes' : 'Create Goal'}
+          </button>
+          <button onClick={onCancel} style={{ padding: '9px 16px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 7, color: 'var(--muted)', cursor: 'pointer', fontSize: '.85rem' }}>
+            Cancel
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Goal Tracker ──────────────────────────────────
+function GoalTracker({ goals, withdrawals, totalPnl, avgDailyPnl, onGoalsChange }) {
+  const [showAll,   setShowAll]   = useState(false);
+  const [formGoal,  setFormGoal]  = useState(null); // null=closed, {}=new, {id,...}=edit
+
+  const activeGoal = goals?.find(g => g.is_active) || goals?.[0] || null;
+  const target     = activeGoal ? activeGoal.target_amount : 0;
+
+  // Per-broker withdrawal totals
+  const bySource = (withdrawals || []).reduce((acc, w) => {
+    const src = (w.source || 'fidelity').toLowerCase();
+    acc[src] = (acc[src] || 0) + w.amount;
+    return acc;
+  }, {});
+  const totalWithdrawn = Object.values(bySource).reduce((s, v) => s + v, 0);
+
+  const earned       = totalPnl || 0;
+  const pct          = target > 0 ? Math.min(100, Math.max(0, (earned / target) * 100)) : 0;
+  const needed       = Math.max(0, target - earned);
+
+  // Trading days left until goal end date or year end
+  const today   = new Date();
+  const refEnd  = activeGoal?.end_date ? new Date(activeGoal.end_date) : new Date(today.getFullYear(), 11, 31);
   let tradingDaysLeft = 0;
-  for (let d = new Date(today); d <= yearEnd; d.setDate(d.getDate() + 1)) {
+  for (let d = new Date(today); d <= refEnd; d.setDate(d.getDate() + 1)) {
     const dow = d.getDay();
     if (dow !== 0 && dow !== 6) tradingDaysLeft++;
   }
   const neededPerDay = tradingDaysLeft > 0 ? (needed / tradingDaysLeft) : 0;
   const daysToGoal   = avgDailyPnl > 0 ? Math.ceil(needed / avgDailyPnl) : null;
 
+  const wBreakdown = Object.entries(bySource).map(([src, amt]) =>
+    src.charAt(0).toUpperCase() + src.slice(1) + ' ' + fMoney(amt, true)
+  ).join(' · ') || '—';
+
+  const handleActivate = async (id) => {
+    const updated = await API.post(`/api/goals/${id}/activate`, {});
+    if (updated?.id) onGoalsChange(prev => prev.map(g => ({ ...g, is_active: g.id === id })));
+  };
+
+  const handleSave = async (fields) => {
+    let saved;
+    if (formGoal?.id) {
+      saved = await API.put(`/api/goals/${formGoal.id}`, fields);
+      if (saved?.id) onGoalsChange(prev => prev.map(g => g.id === saved.id ? saved : g));
+    } else {
+      saved = await API.post('/api/goals', { ...fields, is_active: goals?.length === 0 });
+      if (saved?.id) {
+        onGoalsChange(prev => saved.is_active
+          ? [...prev.map(g => ({ ...g, is_active: false })), saved]
+          : [...prev, saved]
+        );
+      }
+    }
+    setFormGoal(null);
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm('Delete this goal?')) return;
+    const res = await API.del(`/api/goals/${id}`);
+    if (res?.success) {
+      onGoalsChange(prev => {
+        const remaining = prev.filter(g => g.id !== id);
+        // If we removed the active one, mark the last as active
+        if (prev.find(g => g.id === id)?.is_active && remaining.length > 0) {
+          remaining[remaining.length - 1].is_active = true;
+        }
+        return remaining;
+      });
+    }
+  };
+
+  if (!activeGoal && (!goals || goals.length === 0)) {
+    return (
+      <div className="goal-banner" style={{ textAlign: 'center' }}>
+        <div style={{ color: 'var(--muted)', marginBottom: 10 }}>No goals yet. Create one to track your progress.</div>
+        <button onClick={() => setFormGoal({})} style={{ padding: '8px 20px', background: 'linear-gradient(90deg,var(--blue),var(--purple))', border: 'none', borderRadius: 7, color: '#fff', fontWeight: 700, cursor: 'pointer' }}>
+          + Create Goal
+        </button>
+        {formGoal !== null && <GoalForm initial={formGoal?.id ? formGoal : null} onSave={handleSave} onCancel={() => setFormGoal(null)} />}
+      </div>
+    );
+  }
+
   return (
     <div className="goal-banner">
+      {/* Header row */}
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 10, marginBottom: 14 }}>
-        <div style={{ fontWeight: 700, fontSize: '.9rem', display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span>🎯</span>
-          <span>2026 Goal: <span style={{ color: 'var(--green)' }}>{fMoney(goal)}</span></span>
-          <button className="goal-edit-btn" onClick={() => {
-            const v = prompt('Set goal amount ($):', goal);
-            if (v !== null && !isNaN(parseFloat(v))) onSettingsChange('tj_goal', parseFloat(v));
-          }} title="Edit goal">✏️</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: '1rem' }}>🎯</span>
+          <span style={{ fontWeight: 700, fontSize: '.92rem' }}>{activeGoal?.name || 'Goal'}</span>
+          <span style={{ color: 'var(--green)', fontWeight: 700 }}>{fMoney(target)}</span>
+          <button className="goal-edit-btn" onClick={() => setFormGoal(activeGoal)} title="Edit">✏️</button>
+          {goals?.length > 1 && (
+            <button className="goal-edit-btn" onClick={() => setShowAll(s => !s)} title="Switch goal">
+              {showAll ? '▲' : `▼ ${goals.length} goals`}
+            </button>
+          )}
+          <button className="goal-edit-btn" onClick={() => setFormGoal({})} title="New goal" style={{ color: 'var(--cyan)' }}>＋</button>
         </div>
         <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
           {[
-            ['Earned So Far', fMoney(earned, true), earned >= 0 ? 'var(--green)' : 'var(--red)'],
-            ['Still Needed',  fMoney(needed),        'var(--text)'],
-            ['Trading Days Left', tradingDaysLeft,   'var(--cyan)'],
-            ['Needed / Day',  neededPerDay > 0 ? fMoney(neededPerDay) : '—', 'var(--yellow)'],
-            ['Pace (at avg)', daysToGoal ? daysToGoal + ' days' : '—', 'var(--muted)'],
-            ['Total Withdrawn', fMoney(totalWithdrawn, true), 'var(--purple)'],
+            ['Earned',         fMoney(earned, true),                              earned >= 0 ? 'var(--green)' : 'var(--red)'],
+            ['Needed',         fMoney(needed),                                    'var(--text)'],
+            ['Days Left',      tradingDaysLeft,                                   'var(--cyan)'],
+            ['Needed / Day',   neededPerDay > 0 ? fMoney(neededPerDay) : '—',    'var(--yellow)'],
+            ['Pace (at avg)',  daysToGoal ? daysToGoal + ' days' : '—',          'var(--muted)'],
+            ['Withdrawn',      fMoney(totalWithdrawn, true),                       'var(--purple)'],
           ].map(([lbl, val, color]) => (
             <div key={lbl} style={{ textAlign: 'center' }}>
-              <div style={{ fontSize: '.63rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 3 }}>{lbl}</div>
-              <div style={{ fontSize: '.9rem', fontWeight: 700, color }}>{val}</div>
+              <div style={{ fontSize: '.6rem', color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '.04em', marginBottom: 2 }}>{lbl}</div>
+              <div style={{ fontSize: '.88rem', fontWeight: 700, color }}>{val}</div>
             </div>
           ))}
         </div>
       </div>
+
+      {/* Progress bar */}
       <div style={{ background: 'rgba(255,255,255,.06)', borderRadius: 8, height: 12, overflow: 'hidden', position: 'relative' }}>
-        <div style={{ height: '100%', borderRadius: 8, width: pct + '%', transition: 'width .6s ease', background: pct >= 100 ? 'linear-gradient(90deg,var(--cyan),var(--purple))' : 'linear-gradient(90deg,var(--green),var(--cyan))' }} />
+        <div style={{ height: '100%', borderRadius: 8, width: pct + '%', transition: 'width .6s ease',
+          background: pct >= 100 ? 'linear-gradient(90deg,var(--cyan),var(--purple))' : 'linear-gradient(90deg,var(--green),var(--cyan))' }} />
         <div style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', fontSize: '.65rem', fontWeight: 700, color: '#fff', textShadow: '0 1px 3px rgba(0,0,0,.5)' }}>
           {pct.toFixed(1)}%
         </div>
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 5, fontSize: '.62rem', color: 'var(--muted)' }}>
-        <span>$0</span><span>{fMoney(goal * 0.25)}</span><span>{fMoney(goal * 0.5)}</span><span>{fMoney(goal * 0.75)}</span><span>{fMoney(goal)}</span>
+        <span>$0</span><span>{fMoney(target * 0.25)}</span><span>{fMoney(target * 0.5)}</span><span>{fMoney(target * 0.75)}</span><span>{fMoney(target)}</span>
       </div>
+
+      {/* Withdrawal breakdown */}
+      {Object.keys(bySource).length > 0 && (
+        <div style={{ marginTop: 5, fontSize: '.7rem', color: 'var(--muted)', textAlign: 'right' }}>{wBreakdown}</div>
+      )}
+
+      {/* All goals list (toggle) */}
+      {showAll && (
+        <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {goals.map(g => {
+            const gPct = g.target_amount > 0 ? Math.min(100, (earned / g.target_amount) * 100) : 0;
+            return (
+              <div key={g.id} style={{ background: 'var(--surface2)', borderRadius: 8, padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', border: `1px solid ${g.is_active ? 'var(--green)' : 'var(--border)'}` }}
+                onClick={() => handleActivate(g.id)}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: '.82rem', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    {g.is_active && <span style={{ color: 'var(--green)', fontSize: '.7rem' }}>● ACTIVE</span>}
+                    {g.name}
+                  </div>
+                  <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 2 }}>
+                    {fMoney(g.target_amount)} target
+                    {g.start_date ? ` · ${g.start_date}` : ''}
+                    {g.end_date   ? ` → ${g.end_date}` : ''}
+                  </div>
+                  <div style={{ background: 'rgba(255,255,255,.06)', borderRadius: 4, height: 5, marginTop: 4, overflow: 'hidden' }}>
+                    <div style={{ height: '100%', borderRadius: 4, width: gPct + '%', background: 'var(--green)' }} />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: 4 }}>
+                  <button className="goal-edit-btn" onClick={e => { e.stopPropagation(); setFormGoal(g); }} title="Edit">✏️</button>
+                  <button className="goal-edit-btn" onClick={e => { e.stopPropagation(); handleDelete(g.id); }} title="Delete" style={{ color: 'var(--red)' }}>🗑</button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Goal form modal */}
+      {formGoal !== null && (
+        <GoalForm initial={formGoal?.id ? formGoal : null} onSave={handleSave} onCancel={() => setFormGoal(null)} />
+      )}
     </div>
   );
 }
 
-export default function Dashboard({ data, settings, withdrawals, onRefresh, onDayClick, onSettingsChange }) {
+export default function Dashboard({ data, settings, withdrawals, goals, onGoalsChange, onRefresh, onDayClick, onSettingsChange }) {
   const cumulRef    = useRef(null);
   const dailyRef    = useRef(null);
   const monthlyRef  = useRef(null);
@@ -141,11 +302,17 @@ export default function Dashboard({ data, settings, withdrawals, onRefresh, onDa
   if (!data) return <div>{header}</div>;
 
   const { dates, dpnl, monthly, monthlyGross, byInst, byType, details, s } = data;
-  const typeK   = Object.keys(byType);
+  const typeK     = Object.keys(byType);
   const typeTotal = typeK.reduce((sum, k) => sum + byType[k].trades, 0) || 1;
-  const instK   = Object.keys(byInst).sort((a, b) => byInst[b].pnl - byInst[a].pnl);
-  const fidWithdrawn = (withdrawals || []).reduce((sum, w) => sum + w.amount, 0);
-  const rhWithdrawn  = parseFloat(settings?.tj_rh_withdrawn || 0);
+  const instK     = Object.keys(byInst).sort((a, b) => byInst[b].pnl - byInst[a].pnl);
+
+  // Compute withdrawn amounts grouped by source
+  const withdrawnBySource = (withdrawals || []).reduce((acc, w) => {
+    const src = (w.source || 'fidelity').toLowerCase();
+    acc[src] = (acc[src] || 0) + w.amount;
+    return acc;
+  }, {});
+  const totalWithdrawn = Object.values(withdrawnBySource).reduce((s, v) => s + v, 0);
 
   // Build calendar months
   const monthSet = new Set();
@@ -177,11 +344,11 @@ export default function Dashboard({ data, settings, withdrawals, onRefresh, onDa
 
       {/* Goal Tracker */}
       <GoalTracker
-        settings={settings}
+        goals={goals}
         withdrawals={withdrawals}
         totalPnl={s.totalPnl}
         avgDailyPnl={s.avgDailyPnl}
-        onSettingsChange={onSettingsChange}
+        onGoalsChange={onGoalsChange}
       />
 
       {/* KPI Row 1 */}
@@ -258,22 +425,25 @@ export default function Dashboard({ data, settings, withdrawals, onRefresh, onDa
 
       {/* KPI Row 4 — Withdrawn */}
       <div className="kpi-row kpi-row-2">
-        <div className="kpi kpi-purple">
-          <div className="kpi-lbl">Fidelity Withdrawn</div>
-          <div className="kpi-val" style={{ color: 'var(--purple)' }}>{fMoney(fidWithdrawn)}</div>
-          <div className="kpi-sub">From trading profits</div>
-        </div>
-        <div className="kpi kpi-cyan">
-          <div className="kpi-lbl">Robinhood Withdrawn</div>
-          <div className="kpi-val" style={{ color: 'var(--cyan)' }}>{fMoney(rhWithdrawn)}</div>
-          <div className="kpi-sub" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            Manual cash-out
-            <button className="goal-edit-btn" onClick={() => {
-              const v = prompt('Robinhood withdrawn total ($):', rhWithdrawn);
-              if (v !== null && !isNaN(parseFloat(v))) onSettingsChange('tj_rh_withdrawn', parseFloat(v));
-            }}>✏️</button>
+        {Object.entries(withdrawnBySource).length === 0 ? (
+          <div className="kpi kpi-purple">
+            <div className="kpi-lbl">Total Withdrawn</div>
+            <div className="kpi-val" style={{ color: 'var(--purple)' }}>{fMoney(0)}</div>
+            <div className="kpi-sub">No withdrawals yet</div>
           </div>
-        </div>
+        ) : (
+          Object.entries(withdrawnBySource).map(([src, amt], i) => {
+            const colors = ['var(--purple)', 'var(--cyan)', 'var(--blue)', 'var(--orange)'];
+            const classes = ['kpi-purple', 'kpi-cyan', 'kpi-blue', 'kpi-orange'];
+            return (
+              <div key={src} className={`kpi ${classes[i % classes.length]}`}>
+                <div className="kpi-lbl">{src.charAt(0).toUpperCase() + src.slice(1)} Withdrawn</div>
+                <div className="kpi-val" style={{ color: colors[i % colors.length] }}>{fMoney(amt)}</div>
+                <div className="kpi-sub">From trading profits</div>
+              </div>
+            );
+          })
+        )}
         <div className="kpi kpi-yellow">
           <div className="kpi-lbl">Volatility (Std Dev)</div>
           <div className="kpi-val" style={{ color: 'var(--yellow)' }}>{fMoney(s.volatility)}</div>

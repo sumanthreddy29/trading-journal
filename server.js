@@ -102,9 +102,26 @@ async function initDB() {
       user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       date       TEXT    NOT NULL,
       amount     REAL    NOT NULL,
+      source     TEXT    NOT NULL DEFAULT 'fidelity',
       note       TEXT,
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
+
+    CREATE TABLE IF NOT EXISTS goals (
+      id             SERIAL PRIMARY KEY,
+      user_id        INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name           TEXT    NOT NULL,
+      target_amount  REAL    NOT NULL,
+      start_date     TEXT,
+      end_date       TEXT,
+      notes          TEXT,
+      is_active      BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at     TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+  // Migrate existing withdrawals table — add source column if not present
+  await pool.query(`
+    ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'fidelity';
   `);
   console.log('✅ Database tables ready');
 }
@@ -225,7 +242,7 @@ app.post('/api/trades', auth, async (req, res) => {
       t.proceeds    ?? 0,
       t.cost_basis  ?? 0,
       t.total_gl    ?? 0,
-      t.same_day    ?? true,
+      t.same_day !== undefined ? t.same_day : (t.date_acquired === (t.date_sold || t.date_acquired)),
       t.is_ndx      ?? false,
       t.lt_gl       ?? null,
       t.st_gl       ?? null,
@@ -444,6 +461,70 @@ app.post('/api/settings/bulk', auth, async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════
+//  GOALS ROUTES
+app.get('/api/goals', auth, async (req, res) => {
+  const result = await pool.query(
+    'SELECT * FROM goals WHERE user_id = $1 ORDER BY is_active DESC, created_at ASC',
+    [req.user.id]
+  );
+  res.json(result.rows);
+});
+
+app.post('/api/goals', auth, async (req, res) => {
+  const { name, target_amount, start_date, end_date, notes, is_active } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+  if (!target_amount || isNaN(parseFloat(target_amount))) return res.status(400).json({ error: 'target_amount is required' });
+  if (is_active) {
+    await pool.query('UPDATE goals SET is_active = FALSE WHERE user_id = $1', [req.user.id]);
+  }
+  const result = await pool.query(
+    'INSERT INTO goals (user_id, name, target_amount, start_date, end_date, notes, is_active) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
+    [req.user.id, name.trim(), parseFloat(target_amount), start_date || null, end_date || null, notes || null, !!is_active]
+  );
+  res.status(201).json(result.rows[0]);
+});
+
+app.put('/api/goals/:id', auth, async (req, res) => {
+  const { name, target_amount, start_date, end_date, notes } = req.body;
+  if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
+  if (!target_amount || isNaN(parseFloat(target_amount))) return res.status(400).json({ error: 'target_amount is required' });
+  const result = await pool.query(
+    'UPDATE goals SET name=$1, target_amount=$2, start_date=$3, end_date=$4, notes=$5 WHERE id=$6 AND user_id=$7 RETURNING *',
+    [name.trim(), parseFloat(target_amount), start_date || null, end_date || null, notes || null, req.params.id, req.user.id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Goal not found' });
+  res.json(result.rows[0]);
+});
+
+app.post('/api/goals/:id/activate', auth, async (req, res) => {
+  await pool.query('UPDATE goals SET is_active = FALSE WHERE user_id = $1', [req.user.id]);
+  const result = await pool.query(
+    'UPDATE goals SET is_active = TRUE WHERE id = $1 AND user_id = $2 RETURNING *',
+    [req.params.id, req.user.id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Goal not found' });
+  res.json(result.rows[0]);
+});
+
+app.delete('/api/goals/:id', auth, async (req, res) => {
+  const result = await pool.query(
+    'DELETE FROM goals WHERE id = $1 AND user_id = $2 RETURNING id, is_active',
+    [req.params.id, req.user.id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Goal not found' });
+  // If deleted goal was active, promote the most recent remaining one
+  if (result.rows[0].is_active) {
+    await pool.query(
+      `UPDATE goals SET is_active = TRUE WHERE user_id = $1 AND id = (
+         SELECT id FROM goals WHERE user_id = $1 ORDER BY created_at DESC LIMIT 1
+       )`,
+      [req.user.id]
+    );
+  }
+  res.json({ success: true });
+});
+
+// ════════════════════════════════════════════════════
 //  WITHDRAWALS ROUTES
 app.get('/api/withdrawals', auth, async (req, res) => {
   const result = await pool.query(
@@ -454,14 +535,25 @@ app.get('/api/withdrawals', auth, async (req, res) => {
 });
 
 app.post('/api/withdrawals', auth, async (req, res) => {
-  const { date, amount, note } = req.body;
+  const { date, amount, source, note } = req.body;
   if (!date || !amount) return res.status(400).json({ error: 'date and amount are required' });
   if (isNaN(parseFloat(amount)) || parseFloat(amount) <= 0) return res.status(400).json({ error: 'amount must be positive' });
   const result = await pool.query(
-    'INSERT INTO withdrawals (user_id, date, amount, note) VALUES ($1, $2, $3, $4) RETURNING *',
-    [req.user.id, date, parseFloat(amount), note || null]
+    'INSERT INTO withdrawals (user_id, date, amount, source, note) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+    [req.user.id, date, parseFloat(amount), source || 'fidelity', note || null]
   );
   res.status(201).json(result.rows[0]);
+});
+
+app.put('/api/withdrawals/:id', auth, async (req, res) => {
+  const { date, amount, source, note } = req.body;
+  if (!date || !amount) return res.status(400).json({ error: 'date and amount are required' });
+  const result = await pool.query(
+    'UPDATE withdrawals SET date=$1, amount=$2, source=$3, note=$4 WHERE id=$5 AND user_id=$6 RETURNING *',
+    [date, parseFloat(amount), source || 'fidelity', note || null, req.params.id, req.user.id]
+  );
+  if (!result.rows[0]) return res.status(404).json({ error: 'Withdrawal not found' });
+  res.json(result.rows[0]);
 });
 
 app.post('/api/withdrawals/bulk', auth, async (req, res) => {
@@ -471,8 +563,8 @@ app.post('/api/withdrawals/bulk', auth, async (req, res) => {
   for (const w of withdrawals) {
     if (!w.date || !w.amount) continue;
     const r = await pool.query(
-      'INSERT INTO withdrawals (user_id, date, amount, note) VALUES ($1, $2, $3, $4) RETURNING *',
-      [req.user.id, w.date, parseFloat(w.amount), w.note || null]
+      'INSERT INTO withdrawals (user_id, date, amount, source, note) VALUES ($1, $2, $3, $4, $5) RETURNING *',
+      [req.user.id, w.date, parseFloat(w.amount), w.source || 'fidelity', w.note || null]
     );
     inserted.push(r.rows[0]);
   }

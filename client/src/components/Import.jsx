@@ -27,8 +27,10 @@ function parseCsvRows(text) {
 }
 
 function detectType(headers) {
-  if (headers.includes('date_acquired') || headers.includes('total_gl')) return 'trades';
-  if (headers.includes('key') && headers.includes('value'))              return 'settings';
+  // trades: original format OR alternate format (buy_date / net_pnl)
+  if (headers.includes('date_acquired') || headers.includes('total_gl') ||
+      headers.includes('buy_date')       || headers.includes('net_pnl')  ||
+      headers.includes('sell_date')      || headers.includes('buy_amount')) return 'trades';
   if (headers.includes('date') && headers.includes('amount'))            return 'withdrawals';
   return 'unknown';
 }
@@ -36,19 +38,22 @@ function detectType(headers) {
 function rowToTrade(r) {
   return {
     symbol:           r.symbol || r.Symbol || '',
-    base_symbol:      r.base_symbol || r.symbol?.replace(/\(.*\)/, '') || '',
+    base_symbol:      r.base_symbol || r.full_symbol?.replace(/\(.*\)/, '') || r.symbol?.replace(/\(.*\)/, '') || '',
     description:      r.description || r.Description || r.symbol || '',
     trade_type:       (r.trade_type || r.Type || 'CALL').toUpperCase(),
     quantity:         parseFloat(r.quantity || r.Qty || 1),
-    buy_price:        parseFloat(r.buy_price || r['Buy Price'] || 0),
-    sell_price:       parseFloat(r.sell_price || r['Sell Price'] || 0),
-    date_acquired:    r.date_acquired || r['Entry Date'] || r['Buy Date'] || '',
-    date_sold:        r.date_sold     || r['Exit Date']  || r['Sell Date'] || r.date_acquired || '',
-    proceeds:         parseFloat(r.proceeds   || r.Proceeds   || 0),
-    cost_basis:       parseFloat(r.cost_basis || r['Cost Basis'] || 0),
-    total_gl:         parseFloat(r.total_gl   || r['Net P&L']   || 0),
-    same_day:         r.same_day === 'true' || r.same_day === 'Yes' || r['Same Day'] === 'Yes',
-    is_ndx:           /NDXP?/i.test(r.base_symbol || r.symbol || ''),
+    buy_price:        parseFloat(r.buy_price || r.buy_amount  || r['Buy Price'] || 0),
+    sell_price:       parseFloat(r.sell_price || r.sell_amount || r['Sell Price'] || 0),
+    date_acquired:    r.date_acquired || r.buy_date  || r['Entry Date'] || r['Buy Date'] || '',
+    date_sold:        r.date_sold     || r.sell_date || r['Exit Date']  || r['Sell Date'] || r.date_acquired || r.buy_date || '',
+    proceeds:         parseFloat(r.proceeds   || r.sell_amount || r.Proceeds    || 0),
+    cost_basis:       parseFloat(r.cost_basis || r.buy_amount  || r['Cost Basis'] || 0),
+    total_gl:         parseFloat(r.total_gl   || r.net_pnl     || r['Net P&L']  || 0),
+    // Derive same_day from dates; fall back to explicit field if present
+    same_day:         'same_day' in r
+                        ? (r.same_day === 'true' || r.same_day === 'Yes')
+                        : (r.date_acquired || r.buy_date) === (r.date_sold || r.sell_date),
+    is_ndx:           /NDXP?/i.test(r.base_symbol || r.full_symbol || r.symbol || ''),
     lt_gl:            r.lt_gl  ? parseFloat(r.lt_gl)  : null,
     st_gl:            r.st_gl  ? parseFloat(r.st_gl)  : null,
     status:           'closed',
@@ -109,15 +114,15 @@ export default function Import({ onImported, onToast }) {
           } catch { fail++; }
         }
         summary.push({ name: f.name, type: 'trades', ok, fail });
-      } else if (f.type === 'settings') {
-        const obj = {};
-        f.rows.forEach(r => { if (r.key) obj[r.key] = r.value; });
-        const res = await API.post('/api/settings/bulk', { settings: obj });
-        summary.push({ name: f.name, type: 'settings', ok: res?.success ? Object.keys(obj).length : 0, fail: 0 });
       } else if (f.type === 'withdrawals') {
         const withdrawals = f.rows
           .filter(r => r.date && r.amount)
-          .map(r => ({ date: r.date, amount: parseFloat(r.amount) }));
+          .map(r => ({
+            date:   r.date,
+            amount: parseFloat(r.amount),
+            source: (r.source || r.broker || r.account || 'fidelity').toLowerCase(),
+            note:   r.note || r.description || null,
+          }));
         const res = await API.post('/api/withdrawals/bulk', { withdrawals });
         summary.push({ name: f.name, type: 'withdrawals', ok: res?.inserted || 0, fail: withdrawals.length - (res?.inserted || 0) });
       } else {
@@ -138,15 +143,15 @@ export default function Import({ onImported, onToast }) {
     setFiles(f => f.filter(x => x.name !== name));
   }
 
-  const TYPE_LABELS = { trades: '📊 Trades', settings: '⚙️ Settings', withdrawals: '💰 Withdrawals', unknown: '❓ Unknown' };
-  const TYPE_COLORS = { trades: 'var(--blue)', settings: 'var(--cyan)', withdrawals: 'var(--purple)', unknown: 'var(--red)' };
+  const TYPE_LABELS = { trades: '📊 Trades', withdrawals: '💰 Withdrawals', unknown: '❓ Unknown' };
+  const TYPE_COLORS = { trades: 'var(--blue)', withdrawals: 'var(--purple)', unknown: 'var(--red)' };
 
   return (
     <div>
       <div className="page-header">
         <div>
           <div className="page-title">Import CSV</div>
-          <div className="page-sub">Import trades, settings, or withdrawals from CSV files</div>
+          <div className="page-sub">Import trades or withdrawals from CSV files · Goals are managed from the Dashboard</div>
         </div>
       </div>
 
@@ -160,15 +165,11 @@ export default function Import({ onImported, onToast }) {
           {[
             {
               label: '📊 Trades CSV', color: 'var(--blue)',
-              fields: 'id, symbol, base_symbol, quantity, date_acquired, date_sold, proceeds, cost_basis, total_gl, trade_type, same_day …',
+              fields: 'symbol, trade_type, quantity, buy_date (or date_acquired), sell_date (or date_sold), buy_amount (or cost_basis), sell_amount (or proceeds), net_pnl (or total_gl) …',
             },
             {
               label: '💰 Withdrawals CSV', color: 'var(--purple)',
-              fields: 'date (MM/DD/YYYY), amount',
-            },
-            {
-              label: '⚙️ Settings CSV', color: 'var(--cyan)',
-              fields: 'key (tj_goal / tj_start_bal / tj_curr_bal / tj_rh_withdrawn), value',
+              fields: 'date (MM/DD/YYYY), amount, source (fidelity/robinhood/…), note (optional)',
             },
           ].map(s => (
             <div key={s.label} style={{ background: 'var(--surface2)', borderRadius: 8, padding: '10px 14px', borderLeft: `3px solid ${s.color}` }}>
@@ -196,7 +197,7 @@ export default function Import({ onImported, onToast }) {
         <input ref={inputRef} type="file" accept=".csv" multiple style={{ display: 'none' }} onChange={onFileInput} />
         <div style={{ fontSize: '2rem', marginBottom: 8 }}>📂</div>
         <div style={{ fontWeight: 700, marginBottom: 4 }}>Drop CSV files here or click to browse</div>
-        <div style={{ fontSize: '.78rem', color: 'var(--muted)' }}>Accepts trades, settings, and withdrawals CSV files</div>
+        <div style={{ fontSize: '.78rem', color: 'var(--muted)' }}>Accepts trades and withdrawals CSV files</div>
       </div>
 
       {/* File list */}
@@ -222,6 +223,7 @@ export default function Import({ onImported, onToast }) {
               </div>
               {f.type === 'unknown' && (
                 <div style={{ fontSize: '.75rem', color: 'var(--red)', marginTop: 6 }}>
+                  ⚠️ Could not detect format. Expected columns: buy_date/net_pnl or date_acquired/total_gl (trades), or date/amount (withdrawals).
                   ⚠️ Could not detect format. Expected columns: date_acquired/total_gl (trades), key/value (settings), or date/amount (withdrawals).
                 </div>
               )}

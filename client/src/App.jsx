@@ -28,6 +28,7 @@ export default function App() {
   const [toast,      setToast]      = useState({ msg: '', type: 'ok', visible: false });
   const [settings,   setSettings]   = useState({});
   const [withdrawals,setWithdrawals]= useState([]);
+  const [goals,      setGoals]      = useState([]);
 
   const showToast = useCallback((msg, type = 'ok') => {
     setToast({ msg, type, visible: true });
@@ -48,6 +49,7 @@ export default function App() {
     });
     API.get('/api/settings').then(s => { if (s) setSettings(s); });
     API.get('/api/withdrawals').then(w => { if (w) setWithdrawals(w); });
+    API.get('/api/goals').then(g => { if (g) setGoals(g); });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const logout = useCallback(() => {
@@ -61,16 +63,18 @@ export default function App() {
   }, []);
 
   const loadAndRender = useCallback(async () => {
-    const [trades, s, w] = await Promise.all([
+    const [trades, s, w, g] = await Promise.all([
       API.get('/api/trades'),
       API.get('/api/settings'),
       API.get('/api/withdrawals'),
+      API.get('/api/goals'),
     ]);
     if (!trades) return;
     setAllTrades(trades);
     setData(computeStats(trades));
     if (s) setSettings(s);
     if (w) setWithdrawals(w);
+    if (g) setGoals(g);
   }, []);
 
   const handleSettingsChange = useCallback(async (key, value) => {
@@ -106,6 +110,8 @@ export default function App() {
               data={data}
               settings={settings}
               withdrawals={withdrawals}
+              goals={goals}
+              onGoalsChange={setGoals}
               onRefresh={loadAndRender}
               onDayClick={setDayDate}
               onSettingsChange={handleSettingsChange}
