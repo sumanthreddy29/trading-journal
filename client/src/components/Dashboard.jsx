@@ -229,7 +229,7 @@ function GoalTracker({ goals, withdrawals, totalPnl, avgDailyPnl, onGoalsChange 
   );
 }
 
-export default function Dashboard({ data, settings, withdrawals, goals, onGoalsChange, onRefresh, onDayClick, onSettingsChange }) {
+export default function Dashboard({ data, trades, settings, withdrawals, goals, onGoalsChange, onRefresh, onDayClick, onSettingsChange }) {
   const cumulRef    = useRef(null);
   const dailyRef    = useRef(null);
   const donutRef    = useRef(null);
@@ -238,6 +238,12 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
   const [cumulFilter, setCumulFilter] = useState('ALL');
   const [kpiCompact, setKpiCompact] = useState(() => localStorage.getItem('tj_kpi_compact') === '1');
   const toggleCompact = () => setKpiCompact(c => { const nc = !c; localStorage.setItem('tj_kpi_compact', nc ? '1' : '0'); return nc; });
+  const [wForm,   setWForm]   = useState(false);
+  const [wAmt,    setWAmt]    = useState('');
+  const [wDate,   setWDate]   = useState(() => { const t = new Date(); return t.getFullYear() + '-' + String(t.getMonth()+1).padStart(2,'0') + '-' + String(t.getDate()).padStart(2,'0'); });
+  const [wBroker, setWBroker] = useState('fidelity');
+  const [wNote,   setWNote]   = useState('');
+  const [wSaving, setWSaving] = useState(false);
   const todayStr = useMemo(() => { const t = new Date(); return String(t.getMonth() + 1).padStart(2, '0') + '/' + String(t.getDate()).padStart(2, '0') + '/' + t.getFullYear(); }, []);
 
   const filteredCumul = useMemo(() => {
@@ -320,6 +326,26 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
   const todayPnl   = dpnl[todayStr];
   const dailyTarget = parseFloat(settings?.daily_target || 0);
 
+  // Per-broker P&L from raw trades
+  const brokerPnl = (trades || []).reduce((acc, t) => {
+    const b = (t.broker || 'fidelity').toLowerCase();
+    acc[b] = (acc[b] || 0) + (t.total_gl || 0);
+    return acc;
+  }, {});
+  const brokerColors = { fidelity: 'var(--green)', robinhood: 'var(--cyan)' };
+
+  async function saveWithdrawal() {
+    if (!wAmt || isNaN(+wAmt)) return;
+    setWSaving(true);
+    const [y, m, d] = wDate.split('-');
+    await API.post('/api/withdrawals', { date: `${m}/${d}/${y}`, amount: +wAmt, source: wBroker, note: wNote.trim() || null });
+    setWSaving(false);
+    setWForm(false);
+    setWAmt('');
+    setWNote('');
+    onRefresh();
+  }
+
   // Compute withdrawn amounts grouped by source
   const withdrawnBySource = (withdrawals || []).reduce((acc, w) => {
     const src = (w.source || 'fidelity').toLowerCase();
@@ -367,42 +393,6 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
       <div className="chart-card" style={{ marginBottom: 14, padding: '12px 18px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 20, flexWrap: 'wrap' }}>
 
-          {/* Start Balance */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: '1rem' }}>🏦</span>
-            <div>
-              <div style={{ fontSize: '.68rem', textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted)', marginBottom: 2 }}>Start Balance</div>
-              <div style={{ fontWeight: 700, fontSize: '.95rem', color: 'var(--cyan)' }}>
-                {settings?.start_balance ? fMoney(parseFloat(settings.start_balance)) : <span style={{ color: 'var(--muted)', fontWeight: 400 }}>Not set</span>}
-              </div>
-            </div>
-            <button onClick={() => { const v = prompt('Starting account balance ($):', settings?.start_balance || ''); if (v !== null && v !== '' && !isNaN(+v)) onSettingsChange('start_balance', v); }}
-              style={{ padding: '4px 9px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--muted)', cursor: 'pointer', fontSize: '.72rem' }}>
-              ✏️
-            </button>
-          </div>
-
-          <div style={{ width: 1, height: 32, background: 'var(--border)', flexShrink: 0 }} />
-
-          {/* Current Balance */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: '1rem' }}>💰</span>
-            <div>
-              <div style={{ fontSize: '.68rem', textTransform: 'uppercase', letterSpacing: '.06em', color: 'var(--muted)', marginBottom: 2 }}>Current Balance</div>
-              {settings?.start_balance ? (() => {
-                const bal = parseFloat(settings.start_balance) + s.totalPnl - totalWithdrawn;
-                return (
-                  <div style={{ fontWeight: 700, fontSize: '.95rem', color: bal >= 0 ? 'var(--green)' : 'var(--red)' }}>
-                    {fMoney(bal)}
-                    <div style={{ fontSize: '.68rem', color: 'var(--muted)', fontWeight: 400, marginTop: 1 }}>Start + P&amp;L − Withdrawn</div>
-                  </div>
-                );
-              })() : <span style={{ color: 'var(--muted)', fontWeight: 400, fontSize: '.88rem' }}>Set start balance</span>}
-            </div>
-          </div>
-
-          <div style={{ width: 1, height: 32, background: 'var(--border)', flexShrink: 0 }} />
-
           {/* Daily Target */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 200 }}>
             <span style={{ fontSize: '1rem' }}>🎯</span>
@@ -426,6 +416,38 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
             </button>
           </div>
 
+          <div style={{ width: 1, height: 32, background: 'var(--border)', flexShrink: 0 }} />
+
+          {/* Add Withdrawal */}
+          {!wForm ? (
+            <button onClick={() => setWForm(true)}
+              style={{ padding: '7px 14px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 8, color: 'var(--purple)', cursor: 'pointer', fontSize: '.82rem', fontWeight: 600 }}>
+              ➕ Add Withdrawal
+            </button>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <input type="date" value={wDate} onChange={e => setWDate(e.target.value)}
+                style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', color: 'var(--text)', fontSize: '.82rem' }} />
+              <input type="number" value={wAmt} onChange={e => setWAmt(e.target.value)} placeholder="Amount $" min="0" step="0.01"
+                style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', color: 'var(--text)', fontSize: '.82rem', width: 110 }} />
+              <select value={wBroker} onChange={e => setWBroker(e.target.value)}
+                style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', color: 'var(--text)', fontSize: '.82rem' }}>
+                <option value="fidelity">Fidelity</option>
+                <option value="robinhood">Robinhood</option>
+              </select>
+              <input type="text" value={wNote} onChange={e => setWNote(e.target.value)} placeholder="Note (optional)"
+                style={{ background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, padding: '6px 8px', color: 'var(--text)', fontSize: '.82rem', width: 130 }} />
+              <button onClick={saveWithdrawal} disabled={wSaving || !wAmt}
+                style={{ padding: '6px 14px', background: 'var(--purple)', border: 'none', borderRadius: 6, color: '#fff', cursor: 'pointer', fontSize: '.82rem', fontWeight: 600, opacity: (!wAmt || wSaving) ? 0.5 : 1 }}>
+                {wSaving ? '…' : 'Save'}
+              </button>
+              <button onClick={() => { setWForm(false); setWAmt(''); setWNote(''); }}
+                style={{ padding: '6px 10px', background: 'var(--surface2)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--muted)', cursor: 'pointer', fontSize: '.82rem' }}>
+                ✕
+              </button>
+            </div>
+          )}
+
         </div>
       </div>
       {/* KPI Row 1 */}
@@ -434,6 +456,15 @@ export default function Dashboard({ data, settings, withdrawals, goals, onGoalsC
           <div className="kpi-lbl">Total Realized P&amp;L</div>
           <div className={`kpi-val ${s.totalPnl >= 0 ? 'ppos' : 'pneg'}`}>{fMoney(s.totalPnl, true)}</div>
           <div className="kpi-sub">{s.totalDays} trading days</div>
+          {Object.keys(brokerPnl).length > 1 && (
+            <div style={{ marginTop: 6, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+              {Object.entries(brokerPnl).map(([b, v]) => (
+                <span key={b} style={{ fontSize: '.7rem', color: brokerColors[b] || 'var(--muted)', fontWeight: 600 }}>
+                  {b.charAt(0).toUpperCase() + b.slice(1)}: {fMoney(v, true)}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
         <div className="kpi lg kpi-purple">
           <div className="kpi-lbl">Win Rate</div>

@@ -41,6 +41,7 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
   const [shotB64,      setShotB64]     = useState(null);
   const [shotName,     setShotName]    = useState(null);
   const [strike,       setStrike]      = useState('');
+  const [broker,       setBroker]      = useState('fidelity');
   const [saving,       setSaving]      = useState(false);
   const [rulesList,    setRulesList]   = useState([]);
   const [ruleAdherence,setRuleAdherence] = useState({}); // { rule_id: true|false } or absent = not logged
@@ -62,6 +63,7 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
     setBuy(isOpt  ? r2((t.buy_price  || 0) / 100) : (t.buy_price  || 0));
     setSell(isOpt ? r2((t.sell_price || 0) / 100) : (t.sell_price || 0));
     setStrike(t.strike_price != null ? t.strike_price : '');
+    setBroker(t.broker || 'fidelity');
     setEntryDate(slashToIso(t.date_acquired));
     setExitDate(slashToIso(t.date_sold));
     setTags(t.tags || '');
@@ -105,6 +107,7 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
       buy_price:      type === 'CALL' || type === 'PUT' ? r2((+buy  || 0) * 100) : (+buy  || 0),
       sell_price:     type === 'CALL' || type === 'PUT' ? r2((+sell || 0) * 100) : (+sell || 0),
       strike_price:   (type === 'CALL' || type === 'PUT') && strike !== '' ? +strike : null,
+      broker:         broker || 'fidelity',
       date_acquired:  ed,
       date_sold:      xd,
       proceeds,
@@ -171,6 +174,13 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
                     <option value="CALL">CALL (Option)</option>
                     <option value="PUT">PUT (Option)</option>
                     <option value="STOCK">STOCK</option>
+                  </select>
+                </div>
+                <div className="f-group">
+                  <label>Broker</label>
+                  <select value={broker} onChange={e => setBroker(e.target.value)}>
+                    <option value="fidelity">Fidelity</option>
+                    <option value="robinhood">Robinhood</option>
                   </select>
                 </div>
               </div>

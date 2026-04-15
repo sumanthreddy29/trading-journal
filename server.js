@@ -130,6 +130,12 @@ async function initDB() {
   await pool.query(`
     ALTER TABLE trades ADD COLUMN IF NOT EXISTS strike_price REAL;
   `);
+  await pool.query(`
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS broker TEXT NOT NULL DEFAULT 'fidelity';
+  `);
+  await pool.query(`
+    UPDATE trades SET broker = 'fidelity' WHERE broker IS NULL OR broker = '';
+  `);
   console.log('✅ Database tables ready');
 }
 
@@ -229,11 +235,11 @@ app.post('/api/trades', auth, async (req, res) => {
       proceeds, cost_basis, total_gl,
       same_day, is_ndx, lt_gl, st_gl, status,
       entry_reason, market_context, exit_notes, failure_reason,
-      screenshot_b64, screenshot_name, tags, strike_price
+      screenshot_b64, screenshot_name, tags, strike_price, broker
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
       $11,$12,$13,$14,$15,$16,$17,$18,
-      $19,$20,$21,$22,$23,$24,$25,$26
+      $19,$20,$21,$22,$23,$24,$25,$26,$27
     ) RETURNING id`,
     [
       req.user.id,
@@ -262,6 +268,7 @@ app.post('/api/trades', auth, async (req, res) => {
       t.screenshot_name || null,
       t.tags            || null,
       t.strike_price     ?? null,
+      t.broker          || 'fidelity',
     ]
   );
   res.status(201).json({ id: result.rows[0].id, ...t });
@@ -286,9 +293,9 @@ app.put('/api/trades/:id', auth, async (req, res) => {
       proceeds=$10, cost_basis=$11, total_gl=$12,
       same_day=$13, is_ndx=$14, lt_gl=$15, st_gl=$16, status=$17,
       entry_reason=$18, market_context=$19, exit_notes=$20, failure_reason=$21,
-      screenshot_b64=$22, screenshot_name=$23, tags=$24, strike_price=$25,
+      screenshot_b64=$22, screenshot_name=$23, tags=$24, strike_price=$25, broker=$26,
       updated_at=NOW()
-    WHERE id=$26 AND user_id=$27`,
+    WHERE id=$27 AND user_id=$28`,
     [
       m(t.symbol,       e.symbol)?.toUpperCase(),
       m(t.base_symbol,  e.base_symbol)?.toUpperCase(),
@@ -315,6 +322,7 @@ app.put('/api/trades/:id', auth, async (req, res) => {
       m(t.screenshot_name,  e.screenshot_name),
       m(t.tags,             e.tags),
       t.strike_price !== undefined ? t.strike_price : e.strike_price,
+      m(t.broker, e.broker) || 'fidelity',
       req.params.id,
       req.user.id,
     ]

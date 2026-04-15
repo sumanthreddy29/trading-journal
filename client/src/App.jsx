@@ -108,6 +108,7 @@ export default function App() {
           {page === 'dashboard' && (
             <Dashboard
               data={data}
+              trades={allTrades}
               settings={settings}
               withdrawals={withdrawals}
               goals={goals}
