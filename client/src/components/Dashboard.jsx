@@ -334,6 +334,9 @@ export default function Dashboard({ data, trades, settings, withdrawals, goals, 
   }, {});
   const brokerColors = { fidelity: 'var(--green)', robinhood: 'var(--cyan)' };
 
+  // Daily target hit — used for calendar indicator only
+  const hitTarget = (day) => dailyTarget > 0 && dpnl[day] >= dailyTarget;
+
   async function saveWithdrawal() {
     if (!wAmt || isNaN(+wAmt)) return;
     setWSaving(true);
@@ -687,9 +690,10 @@ export default function Dashboard({ data, trades, settings, withdrawals, goals, 
                     const isToday = today.getFullYear() === year && today.getMonth() + 1 === month && today.getDate() === day;
                     if (det) {
                       const pos = det.daily_pnl >= 0;
+                      const hit = hitTarget(key);
                       return (
                         <div key={day} className={`cal-cell trading ${pos ? 'profit' : 'loss'}${isToday ? ' today' : ''}`} onClick={() => onDayClick(key)}>
-                          <div className="cal-date">{day}</div>
+                          <div className="cal-date">{day}{hit && <span style={{ fontSize: '.6rem', marginLeft: 2 }}>🎯</span>}</div>
                           <div className={`cal-pnl ${pos ? 'ppos' : 'pneg'}`}>{det.daily_pnl >= 0 ? '+' : ''}{fY(det.daily_pnl)}</div>
                           <div className="cal-cnt">{det.num_trades}t</div>
                         </div>
