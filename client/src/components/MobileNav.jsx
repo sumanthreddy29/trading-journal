@@ -24,6 +24,12 @@ export default function MobileNav({ page, onNav, onAddTrade, onLogout }) {
       <button className={`mob-btn${page === 'import' ? ' active' : ''}`} onClick={() => onNav('import')}>
         <span className="icon">📥</span>Import
       </button>
+      <button className={`mob-btn${page === 'stocks' ? ' active' : ''}`} onClick={() => onNav('stocks')}>
+        <span className="icon">🔭</span>Market
+      </button>
+      <button className={`mob-btn${page === 'options' ? ' active' : ''}`} onClick={() => onNav('options')}>
+        <span className="icon">⚡</span>Options
+      </button>
       <button className="mob-btn" onClick={onLogout}>
         <span className="icon">⎋</span>Logout
       </button>

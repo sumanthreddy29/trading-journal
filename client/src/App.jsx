@@ -13,7 +13,9 @@ import Analytics  from './components/Analytics.jsx';
 import Rules      from './components/Rules.jsx';
 import Lightbox   from './components/Lightbox.jsx';
 import Toast      from './components/Toast.jsx';
-import Import     from './components/Import.jsx';
+import Import        from './components/Import.jsx';
+import StockDashboard  from './components/StockDashboard.jsx';
+import OptionsScanner  from './components/OptionsScanner.jsx';
 
 export default function App() {
   const [token,      setToken]      = useState(() => localStorage.getItem('tj_token') || '');
@@ -149,6 +151,8 @@ export default function App() {
               onToast={showToast}
             />
           )}
+          {page === 'stocks'   && <StockDashboard />}
+          {page === 'options'  && <OptionsScanner />}
         </main>
         <MobileNav page={page} onNav={setPage} onAddTrade={openAddTrade} onLogout={logout} />
       </div>

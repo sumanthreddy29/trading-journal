@@ -22,6 +22,12 @@ export default function Sidebar({ page, username, onNav, onAddTrade, onLogout })
       <button className={`nav-btn${page === 'import' ? ' active' : ''}`} onClick={() => onNav('import')}>
         📥 <span>Import CSV</span>
       </button>
+      <button className={`nav-btn${page === 'stocks' ? ' active' : ''}`} onClick={() => onNav('stocks')}>
+        🔭 <span>Market Watch</span>
+      </button>
+      <button className={`nav-btn${page === 'options' ? ' active' : ''}`} onClick={() => onNav('options')}>
+        ⚡ <span>Options Flow</span>
+      </button>
       <button className="nav-btn add-trade" onClick={onAddTrade}>＋ Add Trade</button>
       <div className="nav-spacer" />
       <div className="nav-user">👤 {username}</div>

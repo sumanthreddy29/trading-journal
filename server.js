@@ -8,7 +8,11 @@ const { Pool }    = require('pg');
 const bcrypt      = require('bcryptjs');
 const jwt         = require('jsonwebtoken');
 const path        = require('path');
+const fs          = require('fs');
 const rateLimit   = require('express-rate-limit');
+const cron        = require('node-cron');
+const { buildDashboardData } = require('./scripts/fetch-market-data');
+const { runOptionsScan }    = require('./scripts/scan-options');
 
 const app        = express();
 const PORT       = process.env.PORT || 3000;
@@ -135,6 +139,22 @@ async function initDB() {
   `);
   await pool.query(`
     UPDATE trades SET broker = 'fidelity' WHERE broker IS NULL OR broker = '';
+  `);
+  // Create dashboard cache table for daily auto-refresh
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS dashboard_cache (
+      key        TEXT PRIMARY KEY,
+      data       JSONB NOT NULL,
+      updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+  `);
+  // Create options scan cache table
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS options_scan_cache (
+      id         SERIAL PRIMARY KEY,
+      data       JSONB NOT NULL,
+      scanned_at TIMESTAMPTZ DEFAULT NOW()
+    );
   `);
   console.log('✅ Database tables ready');
 }
@@ -597,6 +617,127 @@ app.delete('/api/withdrawals/:id', auth, async (req, res) => {
   res.json({ success: true });
 });
 
+// ════════════════════════════════════════════════════
+//  STOCK DASHBOARD — auto-refresh helpers
+// ════════════════════════════════════════════════════
+
+// Load the static base data (thesis, catalysts, etc.) from disk
+function loadBaseData() {
+  return JSON.parse(fs.readFileSync(path.join(__dirname, 'dashboard-data.json'), 'utf8'));
+}
+
+// Fetch live prices and persist to DB
+async function refreshDashboard() {
+  console.log('\n🔄  Starting daily market data refresh…');
+  const baseData = loadBaseData();
+
+  // Load previous cached data for changelog comparison
+  let prevCachedData = null;
+  try {
+    const res = await pool.query("SELECT data FROM dashboard_cache WHERE key = 'market_data'");
+    prevCachedData = res.rows[0]?.data ?? null;
+  } catch { /* non-fatal */ }
+
+  const freshData = await buildDashboardData(baseData, prevCachedData);
+
+  await pool.query(
+    `INSERT INTO dashboard_cache (key, data, updated_at)
+     VALUES ('market_data', $1::jsonb, NOW())
+     ON CONFLICT (key) DO UPDATE SET data = $1::jsonb, updated_at = NOW()`,
+    [JSON.stringify(freshData)]
+  );
+  console.log('✅  Dashboard cache saved to DB');
+  return freshData;
+}
+
+// GET — serve cached data (falls back to static file on first run)
+app.get('/api/stock-dashboard', async (req, res) => {
+  try {
+    const result = await pool.query("SELECT data FROM dashboard_cache WHERE key = 'market_data'");
+    if (result.rows[0]) return res.json(result.rows[0].data);
+  } catch (err) {
+    console.error('Dashboard cache read error:', err.message);
+  }
+  // Fallback: serve the committed static file
+  res.sendFile(path.join(__dirname, 'dashboard-data.json'));
+});
+
+// POST — manual refresh (requires auth)
+app.post('/api/stock-dashboard/refresh', auth, async (req, res) => {
+  try {
+    const data = await refreshDashboard();
+    res.json({ success: true, lastUpdated: data.meta.lastUpdated });
+  } catch (err) {
+    res.status(500).json({ error: 'Refresh failed: ' + err.message });
+  }
+});
+
+// ════════════════════════════════════════════════════
+//  OPTIONS SCANNER ROUTES
+// ════════════════════════════════════════════════════
+
+// Background refresh function
+async function refreshOptionsScan({ extended = false } = {}) {
+  console.log(`🔍  Running options scan (${extended ? 'extended' : 'default: SPY/QQQ/SPX/NDX'})…`);
+  const data = await runOptionsScan({ extended });
+  await pool.query(
+    `INSERT INTO options_scan_cache (data, scanned_at) VALUES ($1, NOW())`,
+    [JSON.stringify(data)]
+  );
+  // Keep only last 10 scans
+  await pool.query(
+    `DELETE FROM options_scan_cache WHERE id NOT IN (
+       SELECT id FROM options_scan_cache ORDER BY scanned_at DESC LIMIT 10
+     )`
+  );
+  console.log('✅  Options scan saved to DB');
+  return data;
+}
+
+// GET latest scan results (public — no auth required for read)
+app.get('/api/options-scanner', async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT data, scanned_at FROM options_scan_cache ORDER BY scanned_at DESC LIMIT 1'
+    );
+    if (result.rows[0]) {
+      return res.json({ ...result.rows[0].data, _cachedAt: result.rows[0].scanned_at });
+    }
+    res.json({ alerts: [], volumeSpikes: [], optionsChains: [], _cachedAt: null });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET options chain for a specific ticker (live fetch)
+app.get('/api/options-scanner/:ticker', async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase().replace(/[^A-Z0-9.\-]/g, '');
+  if (!ticker) return res.status(400).json({ error: 'Invalid ticker' });
+  try {
+    const { default: YFC } = require('yahoo-finance2');
+    const YF = new YFC({ suppressNotices: ['yahooSurvey'] });
+    const [quote, chain] = await Promise.all([
+      YF.quote(ticker, {}, { validateResult: false }),
+      YF.options(ticker, {}, { validateResult: false }),
+    ]);
+    res.json({ ticker, quote, chain });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST — trigger manual re-scan (auth required)
+// Body: { extended: true } to scan full US universe
+app.post('/api/options-scanner/refresh', auth, async (req, res) => {
+  try {
+    const extended = req.body?.extended === true;
+    const data = await refreshOptionsScan({ extended });
+    res.json({ success: true, scannedAt: data.scannedAt, alertCount: data.alerts.length, mode: data.mode });
+  } catch (err) {
+    res.status(500).json({ error: 'Scan failed: ' + err.message });
+  }
+});
+
 // ── Global error handler ──────────────────────────
 app.use((err, req, res, next) => {
   console.error(err);
@@ -605,7 +746,36 @@ app.use((err, req, res, next) => {
 
 // ── Start ─────────────────────────────────────────
 initDB()
-  .then(() => {
+  .then(async () => {
+    // Seed the DB cache on startup if it's empty or stale (>23h old)
+    try {
+      const cached = await pool.query(
+        "SELECT updated_at FROM dashboard_cache WHERE key = 'market_data'"
+      );
+      const lastUpdate = cached.rows[0]?.updated_at;
+      const ageHours   = lastUpdate
+        ? (Date.now() - new Date(lastUpdate).getTime()) / 3_600_000
+        : Infinity;
+      if (ageHours > 23) {
+        console.log('⏳  Dashboard cache is stale — running background refresh…');
+        refreshDashboard().catch(e => console.error('Startup refresh failed:', e.message));
+      }
+    } catch { /* non-fatal */ }
+
+    // Daily cron: 8:00 AM ET, weekdays only — market data
+    cron.schedule('0 8 * * 1-5', () => {
+      console.log('⏰  Cron triggered: refreshing dashboard data…');
+      refreshDashboard().catch(e => console.error('Cron refresh failed:', e.message));
+    }, { timezone: 'America/New_York' });
+    console.log('⏰  Market data cron scheduled: 8:00 AM ET, Mon–Fri');
+
+    // Daily cron: 9:35 AM ET (5 min after market open) — options scan (SPY/QQQ/SPX/NDX)
+    cron.schedule('35 9 * * 1-5', () => {
+      console.log('⏰  Cron triggered: running options scanner (default)…');
+      refreshOptionsScan({ extended: false }).catch(e => console.error('Options scan cron failed:', e.message));
+    }, { timezone: 'America/New_York' });
+    console.log('⏰  Options scan cron scheduled: 9:35 AM ET, Mon–Fri');
+
     app.listen(PORT, () => {
       console.log(`\n🚀  Trading Journal  →  http://localhost:${PORT}`);
       console.log(`🗄️   Database        →  PostgreSQL (${process.env.DATABASE_URL ? 'Neon' : 'local'})\n`);
