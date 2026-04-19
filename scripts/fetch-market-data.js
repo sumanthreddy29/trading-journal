@@ -214,3 +214,4 @@ if (require.main === module) {
       console.log(`\n✅  ${data.stocks.length} stocks ready.`);
     })
     .catch(err => { console.error('❌', err.message); process.exit(1); });
+}

@@ -287,6 +287,71 @@ tbody td { padding: 10px 14px; font-size: .85rem; vertical-align: top; }
 /* footer */
 .mw-footer { padding: 1.25rem 0; border-top: 1px solid #1e293b; font-size: .75rem; color: #475569; margin-top: 1rem; }
 
+/* ── Stock detail panel ───────────────────────── */
+.mw-detail-overlay { position:fixed; inset:0; background:rgba(0,0,0,.65); z-index:200; display:flex; align-items:flex-start; justify-content:center; padding:32px 12px; overflow-y:auto; }
+.mw-detail-panel   { background:#0d1117; border:1px solid #1e293b; border-radius:14px; width:100%; max-width:900px; box-shadow:0 24px 80px #000a; overflow:hidden; }
+
+/* panel header */
+.mw-detail-hd       { display:flex; align-items:flex-start; gap:12px; padding:16px 20px; border-bottom:1px solid #1e293b; background:#0a0f1a; }
+.mw-detail-hd-left  { flex:1; }
+.mw-detail-ticker-lbl { font-size:1.6rem; font-weight:800; color:#7dd3fc; letter-spacing:-.02em; }
+.mw-detail-name-lbl   { font-size:.95rem; font-weight:600; margin:2px 0 4px; }
+.mw-detail-hd-right { display:flex; flex-direction:column; align-items:flex-end; gap:4px; }
+.mw-detail-price-lbl  { font-size:1.4rem; font-weight:700; }
+.mw-detail-close    { background:none; border:none; color:#64748b; font-size:1.1rem; cursor:pointer; padding:4px 8px; border-radius:6px; }
+.mw-detail-close:hover { color:#f1f5f9; background:#1e293b; }
+
+/* TradingView chart */
+.mw-tv-wrap { width:100%; background:#0f172a; }
+.mw-tv-wrap iframe { display:block; }
+
+/* body scrollable */
+.mw-detail-body { padding:16px 20px; display:flex; flex-direction:column; gap:20px; }
+
+/* key stats grid */
+.mw-detail-stats  { display:grid; grid-template-columns:repeat(7, 1fr); gap:8px; }
+.mw-stat-cell     { background:#0f172a; border:1px solid #1e293b; border-radius:8px; padding:8px 10px; }
+.mw-stat-lbl      { font-size:.65rem; color:#64748b; text-transform:uppercase; letter-spacing:.05em; }
+.mw-stat-val      { font-size:.9rem; font-weight:600; margin-top:3px; }
+
+/* support / resistance */
+.mw-levels-wrap      { background:#0f172a; border:1px solid #1e293b; border-radius:10px; padding:14px 16px; }
+.mw-levels-title     { font-size:.72rem; color:#64748b; text-transform:uppercase; letter-spacing:.08em; margin-bottom:12px; font-weight:600; }
+.mw-levels-cols      { display:grid; grid-template-columns:1fr auto 1fr; gap:12px; align-items:start; }
+.mw-levels-col       { display:flex; flex-direction:column; gap:6px; }
+.mw-levels-col-hd    { font-size:.75rem; font-weight:700; margin-bottom:4px; }
+.mw-level-row        { display:flex; align-items:center; gap:8px; font-size:.8rem; padding:4px 0; border-bottom:1px solid #1e293b11; }
+.mw-level-lbl        { flex:1; font-size:.72rem; }
+.mw-level-price      { font-weight:600; font-variant-numeric:tabular-nums; }
+.mw-levels-divider   { display:flex; align-items:center; justify-content:center; }
+.mw-current-price-tag { background:#334155; border:1px solid #475569; border-radius:8px; padding:6px 12px; font-size:.85rem; font-weight:700; color:#f1f5f9; white-space:nowrap; }
+
+/* trade plan */
+.mw-trade-plan     { background:#0f172a; border:1px solid #1e293b; border-radius:10px; padding:14px 16px; }
+.mw-trade-grid     { display:grid; grid-template-columns:repeat(auto-fit, minmax(140px,1fr)); gap:10px; margin-top:10px; }
+.mw-trade-cell     { border-radius:8px; padding:12px 14px; border:1px solid; }
+.mw-trade-lbl      { font-size:.65rem; text-transform:uppercase; letter-spacing:.06em; font-weight:600; }
+.mw-trade-val      { font-size:1.1rem; font-weight:700; margin:4px 0 2px; }
+.mw-trade-hint     { font-size:.7rem; color:#64748b; }
+.mw-trade-entry    { border-color:#334155; background:#1e293b22; }
+.mw-trade-entry .mw-trade-lbl { color:#94a3b8; }
+.mw-trade-t1       { border-color:#16a34a44; background:#16a34a11; }
+.mw-trade-t1 .mw-trade-lbl { color:#22c55e; }
+.mw-trade-t2       { border-color:#15803d44; background:#15803d0d; }
+.mw-trade-t2 .mw-trade-lbl { color:#4ade80; }
+.mw-trade-stop     { border-color:#ef444444; background:#ef444411; }
+.mw-trade-stop .mw-trade-lbl { color:#f87171; }
+.mw-trade-stop .mw-trade-val { color:#ef4444; }
+.mw-trade-disclaimer { font-size:.7rem; color:#475569; margin-top:10px; padding-top:8px; border-top:1px solid #1e293b; }
+
+@media (max-width: 800px) {
+  .mw-detail-overlay  { padding:0; align-items:flex-end; }
+  .mw-detail-panel    { max-width:100%; border-radius:16px 16px 0 0; max-height:92vh; overflow-y:auto; }
+  .mw-detail-stats    { grid-template-columns:repeat(4,1fr); }
+  .mw-levels-cols     { grid-template-columns:1fr; }
+  .mw-levels-divider  { display:none; }
+}
+
 @media (max-width: 800px) {
   .mw-search { width: 100%; }
   .mw-snap-item { padding: 8px 12px; }

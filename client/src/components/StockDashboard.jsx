@@ -7,6 +7,52 @@ const fmtVol  = v => v == null ? '—' : v >= 1e9 ? (v/1e9).toFixed(1)+'B' : v >
 const fmtMcap = b => b == null ? '—' : b >= 1000 ? '$'+(b/1000).toFixed(1)+'T' : '$'+b.toFixed(0)+'B';
 const chgCls  = v => v == null ? '' : v >= 0 ? 'mw-up' : 'mw-dn';
 
+// TradingView exchange map
+const TV_EX = { NMS:'NASDAQ', NMQ:'NASDAQ', NYQ:'NYSE', NYS:'NYSE', PCX:'AMEX', BTS:'NASDAQ' };
+function tvSym(ticker, exchange) {
+  const ex  = TV_EX[exchange] || '';
+  const sym = ticker.replace(/\^/g, '').replace(/-/g, '');
+  return ex ? `${ex}:${sym}` : sym;
+}
+
+// Compute support/resistance/trade plan from cached quote data
+function calcLevels(s) {
+  const p = s.price;
+  if (!p) return null;
+  const supports = [], resistances = [];
+
+  if (s.high    && s.high    > p) resistances.push({ label: 'Day High',       price: s.high,    type: 'day'    });
+  if (s.target  && s.target  > p) resistances.push({ label: 'Analyst Target', price: s.target,  type: 'target' });
+  if (s.w52High && s.w52High > p) resistances.push({ label: '52w High',       price: s.w52High, type: 'year'   });
+  if (s.low     && s.low     < p) supports.push({ label: 'Day Low',  price: s.low,  type: 'day'  });
+
+  if (s.w52Low) {
+    supports.push({ label: '52w Low', price: s.w52Low, type: 'year' });
+    const range = (s.w52High || p) - s.w52Low;
+    if (range > 0) {
+      for (const [pct, lbl] of [[0.618,'Fib 61.8%'],[0.500,'Fib 50.0%'],[0.382,'Fib 38.2%']]) {
+        const fp = +(s.w52Low + range * pct).toFixed(2);
+        if      (fp < p * 0.99 && fp > s.w52Low * 1.01) supports.push({ label: lbl, price: fp, type: 'fib' });
+        else if (fp > p * 1.01)                          resistances.push({ label: lbl, price: fp, type: 'fib' });
+      }
+    }
+  }
+  resistances.sort((a, b) => a.price - b.price);
+  supports.sort((a, b) => b.price - a.price);
+
+  let entry = null, t1 = null, t2 = null, stop = null;
+  if (s.rating?.toLowerCase().includes('buy')) {
+    entry = p;
+    t1    = s.target ? s.target : +(p * 1.10).toFixed(2);
+    t2    = s.w52High && s.w52High > (t1 * 1.01) ? s.w52High : null;
+    const nearSup = supports.find(lv => lv.price < p * 0.98);
+    stop  = nearSup ? +(nearSup.price * 0.99).toFixed(2) : +(p * 0.93).toFixed(2);
+  }
+  return { supports, resistances, entry, t1, t2, stop };
+}
+
+const TYPE_COLOR = { day:'#38bdf8', target:'#f59e0b', year:'#a78bfa', fib:'#64748b' };
+
 const SECTORS = ['All','Technology','Communication Services','Financial Services',
   'Healthcare','Consumer Discretionary','Consumer Staples','Energy',
   'Utilities','Industrials','Basic Materials','Real Estate','ETF'];
@@ -23,6 +69,150 @@ const SORT_KEYS = [
 ];
 
 const PAGE_SIZE = 50;
+
+// Stock detail panel
+function StockDetailPanel({ stock, onClose }) {
+  const sym    = tvSym(stock.ticker, stock.exchange);
+  const levels = calcLevels(stock);
+  const isBuy  = stock.rating?.toLowerCase().includes('buy');
+  return (
+    <div className="mw-detail-overlay" onClick={onClose}>
+      <div className="mw-detail-panel" onClick={e => e.stopPropagation()}>
+        <div className="mw-detail-hd">
+          <div className="mw-detail-hd-left">
+            <span className="mw-detail-ticker-lbl">{stock.ticker}</span>
+            <div className="mw-detail-name-lbl">{stock.name}</div>
+            <span className="mw-muted" style={{fontSize:'.72rem'}}>{stock.sector || stock.quoteType || ''}</span>
+          </div>
+          <div className="mw-detail-hd-right">
+            <span className="mw-detail-price-lbl">${fmt(stock.price)}</span>
+            <span className={chgCls(stock.change)} style={{fontSize:'1rem',fontWeight:700}}>
+              {stock.change >= 0 ? '+' : ''}{fmt(stock.change)}%
+            </span>
+            {stock.rating && <span className={`mw-rating-pill ${stock.rating.toLowerCase().replace(/\s+/g,'-')}`}>{stock.rating}</span>}
+          </div>
+          <button className="mw-detail-close" onClick={onClose}>✕</button>
+        </div>
+        <div className="mw-tv-wrap">
+          <iframe
+            key={stock.ticker}
+            src={`https://s.tradingview.com/widgetembed/?symbol=${encodeURIComponent(sym)}&interval=D&theme=dark&style=1&locale=en&toolbar_bg=%230f172a&withdateranges=true&hide_legend=false&saveimage=false&hideideas=true&hide_side_toolbar=false`}
+            width="100%" height="420" frameBorder="0" allowTransparency="true" scrolling="no"
+            title={`${stock.ticker} Chart`}
+          />
+        </div>
+        <div className="mw-detail-body">
+          <div className="mw-detail-stats">
+            {[
+              { lbl:'Open',      val: stock.open      != null ? '$'+fmt(stock.open)      : '—' },
+              { lbl:'High',      val: stock.high      != null ? '$'+fmt(stock.high)      : '—' },
+              { lbl:'Low',       val: stock.low       != null ? '$'+fmt(stock.low)       : '—' },
+              { lbl:'Volume',    val: fmtVol(stock.volume) },
+              { lbl:'Avg Vol',   val: fmtVol(stock.avgVolume) },
+              { lbl:'Vol Spike', val: stock.spikeRatio != null ? stock.spikeRatio+'×' : '—' },
+              { lbl:'Mkt Cap',   val: fmtMcap(stock.marketCap) },
+              { lbl:'P/E',       val: stock.pe   != null ? stock.pe+'x'       : '—' },
+              { lbl:'EPS',       val: stock.eps  != null ? '$'+fmt(stock.eps) : '—' },
+              { lbl:'Beta',      val: stock.beta != null ? stock.beta         : '—' },
+              { lbl:'52w High',  val: stock.w52High != null ? '$'+fmt(stock.w52High) : '—' },
+              { lbl:'52w Low',   val: stock.w52Low  != null ? '$'+fmt(stock.w52Low)  : '—' },
+              { lbl:'Target',    val: stock.target  != null ? '$'+fmt(stock.target)  : '—', cls:'mw-up' },
+              { lbl:'Upside',    val: stock.upside  != null ? (stock.upside >= 0 ? '+' : '')+fmt(stock.upside)+'%' : '—', cls:chgCls(stock.upside) },
+            ].map(({ lbl, val, cls }) => (
+              <div key={lbl} className="mw-stat-cell">
+                <div className="mw-stat-lbl">{lbl}</div>
+                <div className={`mw-stat-val${cls ? ' '+cls : ''}`}>{val}</div>
+              </div>
+            ))}
+          </div>
+          {levels && (
+            <div className="mw-levels-wrap">
+              <div className="mw-levels-title">Support &amp; Resistance</div>
+              <div className="mw-levels-cols">
+                <div className="mw-levels-col">
+                  <div className="mw-levels-col-hd" style={{color:'#ef4444'}}>⬆ Resistance</div>
+                  {levels.resistances.length === 0
+                    ? <div className="mw-muted" style={{fontSize:'.75rem'}}>Near 52w high</div>
+                    : levels.resistances.map((lv, i) => {
+                        const pct = +((lv.price - stock.price) / stock.price * 100).toFixed(1);
+                        return (
+                          <div key={i} className="mw-level-row">
+                            <span className="mw-level-lbl" style={{color:TYPE_COLOR[lv.type]}}>{lv.label}</span>
+                            <span className="mw-level-price">${fmt(lv.price)}</span>
+                            <span className="mw-up" style={{fontSize:'.72rem'}}>+{pct}%</span>
+                          </div>
+                        );
+                      })
+                  }
+                </div>
+                <div className="mw-levels-divider">
+                  <div className="mw-current-price-tag">
+                    ▶ ${fmt(stock.price)}
+                    <span className="mw-muted" style={{fontSize:'.68rem',marginLeft:5}}>current</span>
+                  </div>
+                </div>
+                <div className="mw-levels-col">
+                  <div className="mw-levels-col-hd" style={{color:'#22c55e'}}>⬇ Support</div>
+                  {levels.supports.length === 0
+                    ? <div className="mw-muted" style={{fontSize:'.75rem'}}>Near 52w low</div>
+                    : levels.supports.map((lv, i) => {
+                        const pct = +((stock.price - lv.price) / stock.price * 100).toFixed(1);
+                        return (
+                          <div key={i} className="mw-level-row">
+                            <span className="mw-level-lbl" style={{color:TYPE_COLOR[lv.type]}}>{lv.label}</span>
+                            <span className="mw-level-price">${fmt(lv.price)}</span>
+                            <span className="mw-dn" style={{fontSize:'.72rem'}}>-{pct}%</span>
+                          </div>
+                        );
+                      })
+                  }
+                </div>
+              </div>
+            </div>
+          )}
+          {isBuy && levels && (
+            <div className="mw-trade-plan">
+              <div className="mw-levels-title">📋 Trade Plan</div>
+              <div className="mw-trade-grid">
+                <div className="mw-trade-cell mw-trade-entry">
+                  <div className="mw-trade-lbl">Entry</div>
+                  <div className="mw-trade-val">${fmt(levels.entry)}</div>
+                  <div className="mw-trade-hint">At market / limit</div>
+                </div>
+                <div className="mw-trade-cell mw-trade-t1">
+                  <div className="mw-trade-lbl">Target 1</div>
+                  <div className="mw-trade-val">${fmt(levels.t1)}</div>
+                  <div className="mw-trade-hint">
+                    {levels.t1 && levels.entry ? '+'+((levels.t1-levels.entry)/levels.entry*100).toFixed(1)+'%' : ''}
+                    {stock.target === levels.t1 ? ' · analyst' : ''}
+                  </div>
+                </div>
+                {levels.t2 && (
+                  <div className="mw-trade-cell mw-trade-t2">
+                    <div className="mw-trade-lbl">Target 2</div>
+                    <div className="mw-trade-val">${fmt(levels.t2)}</div>
+                    <div className="mw-trade-hint">{'+'+((levels.t2-levels.entry)/levels.entry*100).toFixed(1)+'% · 52w high'}</div>
+                  </div>
+                )}
+                <div className="mw-trade-cell mw-trade-stop">
+                  <div className="mw-trade-lbl">Stop Loss</div>
+                  <div className="mw-trade-val">${fmt(levels.stop)}</div>
+                  <div className="mw-trade-hint">
+                    {levels.stop && levels.entry ? ((levels.stop-levels.entry)/levels.entry*100).toFixed(1)+'%' : ''}
+                    {' · below support'}
+                  </div>
+                </div>
+              </div>
+              <p className="mw-trade-disclaimer">
+                ⚠️ Not financial advice. Levels from 52-week range, Fibonacci retracements &amp; analyst consensus.
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function ChangeBar({ pct }) {
   if (pct == null) return null;
@@ -62,8 +252,9 @@ export default function StockDashboard() {
   const [sortKey,    setSortKey]    = useState('change');
   const [sortDir,    setSortDir]    = useState(-1); // -1 = desc
   const [page,       setPage]       = useState(1);
-  const [ratingFilt, setRatingFilt] = useState('All');
-  const [spikeFilt,  setSpikeFilt]  = useState(false);
+  const [ratingFilt,    setRatingFilt]    = useState('All');
+  const [spikeFilt,     setSpikeFilt]     = useState(false);
+  const [selectedStock, setSelectedStock] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -215,7 +406,7 @@ export default function StockDashboard() {
           <input type="checkbox" checked={spikeFilt} onChange={e => { setSpikeFilt(e.target.checked); setPage(1); }} />
           Vol Spike ≥2×
         </label>
-        <span className="mw-count mw-muted">{filtered.length} stocks</span>
+        <span className="mw-count mw-muted">{filtered.length} stocks · click any row for chart</span>
       </div>
 
       {/* Table */}
@@ -249,7 +440,7 @@ export default function StockDashboard() {
               </thead>
               <tbody>
                 {pageStocks.map(s => (
-                  <tr key={s.ticker} className="mw-row">
+                  <tr key={s.ticker} className="mw-row" onClick={() => setSelectedStock(s)} title="Click for chart & levels" style={{cursor:'pointer'}}>
                     <td className="mw-ticker">{s.ticker}</td>
                     <td className="mw-name">{s.name?.length > 24 ? s.name.slice(0, 24) + '…' : s.name}</td>
                     <td className="mw-sector mw-muted">{s.sector || s.quoteType || '—'}</td>
@@ -297,8 +488,10 @@ export default function StockDashboard() {
       )}
 
       <div className="mw-footer mw-muted">
-        Powered by Yahoo Finance (yahoo-finance2). Auto-refreshes hourly 8AM–4PM ET + midnight Mon–Fri. Not investment advice.
+        Powered by Yahoo Finance. Charts via TradingView. Auto-refreshes hourly 8AM–4PM ET + midnight Mon–Fri. Not investment advice.
       </div>
+
+      {selectedStock && <StockDetailPanel stock={selectedStock} onClose={() => setSelectedStock(null)} />}
     </div>
   );
 }
