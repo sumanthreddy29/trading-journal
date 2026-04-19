@@ -621,24 +621,18 @@ app.delete('/api/withdrawals/:id', auth, async (req, res) => {
 //  STOCK DASHBOARD — auto-refresh helpers
 // ════════════════════════════════════════════════════
 
-// Load the static base data (thesis, catalysts, etc.) from disk
-function loadBaseData() {
-  return JSON.parse(fs.readFileSync(path.join(__dirname, 'dashboard-data.json'), 'utf8'));
-}
-
 // Fetch live prices and persist to DB
 async function refreshDashboard() {
-  console.log('\n🔄  Starting daily market data refresh…');
-  const baseData = loadBaseData();
+  console.log('\n🔄  Starting market data refresh…');
 
-  // Load previous cached data for changelog comparison
+  // Load previous cached data for continuity
   let prevCachedData = null;
   try {
     const res = await pool.query("SELECT data FROM dashboard_cache WHERE key = 'market_data'");
     prevCachedData = res.rows[0]?.data ?? null;
   } catch { /* non-fatal */ }
 
-  const freshData = await buildDashboardData(baseData, prevCachedData);
+  const freshData = await buildDashboardData(prevCachedData);
 
   await pool.query(
     `INSERT INTO dashboard_cache (key, data, updated_at)
@@ -650,16 +644,15 @@ async function refreshDashboard() {
   return freshData;
 }
 
-// GET — serve cached data (falls back to static file on first run)
+// GET — serve cached data
 app.get('/api/stock-dashboard', async (req, res) => {
   try {
-    const result = await pool.query("SELECT data FROM dashboard_cache WHERE key = 'market_data'");
-    if (result.rows[0]) return res.json(result.rows[0].data);
+    const result = await pool.query("SELECT data, updated_at FROM dashboard_cache WHERE key = 'market_data'");
+    if (result.rows[0]) return res.json({ ...result.rows[0].data, _cachedAt: result.rows[0].updated_at });
+    res.json({ meta: { lastUpdated: null, stockCount: 0 }, stocks: [], _notScanned: true });
   } catch (err) {
-    console.error('Dashboard cache read error:', err.message);
+    res.status(500).json({ error: err.message });
   }
-  // Fallback: serve the committed static file
-  res.sendFile(path.join(__dirname, 'dashboard-data.json'));
 });
 
 // POST — manual refresh (requires auth)
@@ -738,6 +731,91 @@ app.post('/api/options-scanner/refresh', auth, async (req, res) => {
   }
 });
 
+// ── Social Buzz ───────────────────────────────────
+// Trending: yahoo-finance2 (reliable, no auth needed)
+// Sentiment stream: StockTwits public API (best-effort, graceful fallback)
+// Reddit: public JSON API
+const _socialCache = {};
+function socialCached(key, ttlMs) {
+  const c = _socialCache[key];
+  return c && (Date.now() - c.ts) < ttlMs ? c.data : null;
+}
+function socialStore(key, data) { _socialCache[key] = { data, ts: Date.now() }; return data; }
+
+// GET trending symbols via yahoo-finance2 trendingSymbols (5-min cache)
+app.get('/api/social/trending', async (req, res) => {
+  try {
+    const cached = socialCached('trending', 5 * 60 * 1000);
+    if (cached) return res.json(cached);
+    const { default: YFC } = require('yahoo-finance2');
+    const yf = new YFC({ suppressNotices: ['yahooSurvey'] });
+    const result = await yf.trendingSymbols('US', {}, { validateResult: false });
+    const quotes = result?.quotes || [];
+    // Enrich with quote data (price, change, watchlist_count proxy)
+    const enriched = await Promise.allSettled(
+      quotes.slice(0, 20).map(async (q) => {
+        try {
+          const quote = await yf.quote(q.symbol, {}, { validateResult: false });
+          return {
+            symbol:          q.symbol,
+            title:           quote?.longName || quote?.shortName || q.symbol,
+            price:           quote?.regularMarketPrice,
+            change:          quote?.regularMarketChangePercent,
+            volume:          quote?.regularMarketVolume,
+            watchlist_count: quote?.regularMarketVolume || 0, // volume as proxy
+          };
+        } catch {
+          return { symbol: q.symbol, title: q.symbol, watchlist_count: 0 };
+        }
+      })
+    );
+    const symbols = enriched.filter(r => r.status === 'fulfilled').map(r => r.value);
+    res.json(socialStore('trending', { symbols }));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET message stream for a ticker from StockTwits (2-min cache, graceful fallback)
+app.get('/api/social/stream/:symbol', async (req, res) => {
+  const symbol = req.params.symbol.toUpperCase().replace(/[^A-Z0-9.\-^]/g, '');
+  if (!symbol) return res.status(400).json({ error: 'Invalid symbol' });
+  try {
+    const key = `stream:${symbol}`;
+    const cached = socialCached(key, 2 * 60 * 1000);
+    if (cached) return res.json(cached);
+    const r = await fetch(`https://api.stocktwits.com/api/2/streams/symbol/${symbol}.json?limit=30`, {
+      headers: { 'Accept': 'application/json' },
+    });
+    const text = await r.text();
+    // StockTwits sometimes returns HTML (rate-limit / auth error) — detect and fall back
+    if (text.trimStart().startsWith('<')) {
+      return res.json(socialStore(key, { messages: [], _unavailable: true }));
+    }
+    const data = JSON.parse(text);
+    res.json(socialStore(key, data));
+  } catch (err) {
+    // Non-fatal: return empty messages
+    res.json({ messages: [], _unavailable: true });
+  }
+});
+
+// GET Reddit r/wallstreetbets hot posts (10-min cache)
+app.get('/api/social/reddit', async (req, res) => {
+  try {
+    const cached = socialCached('reddit', 10 * 60 * 1000);
+    if (cached) return res.json(cached);
+    const r = await fetch('https://www.reddit.com/r/wallstreetbets/hot.json?limit=25', {
+      headers: { 'User-Agent': 'trading-journal/1.0 (server-side proxy)' },
+    });
+    if (!r.ok) throw new Error(`Reddit responded with ${r.status}`);
+    const data = await r.json();
+    res.json(socialStore('reddit', data));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Global error handler ──────────────────────────
 app.use((err, req, res, next) => {
   console.error(err);
@@ -762,12 +840,18 @@ initDB()
       }
     } catch { /* non-fatal */ }
 
-    // Daily cron: 8:00 AM ET, weekdays only — market data
-    cron.schedule('0 8 * * 1-5', () => {
-      console.log('⏰  Cron triggered: refreshing dashboard data…');
-      refreshDashboard().catch(e => console.error('Cron refresh failed:', e.message));
+    // Hourly cron: every hour 8AM–4PM ET weekdays (market hours)
+    cron.schedule('0 8-16 * * 1-5', () => {
+      console.log('⏰  Cron triggered: hourly market data refresh…');
+      refreshDashboard().catch(e => console.error('Dashboard cron failed:', e.message));
     }, { timezone: 'America/New_York' });
-    console.log('⏰  Market data cron scheduled: 8:00 AM ET, Mon–Fri');
+
+    // Midnight refresh: catch after-hours moves and pre-market setup
+    cron.schedule('0 0 * * 1-5', () => {
+      console.log('⏰  Cron triggered: midnight market data refresh…');
+      refreshDashboard().catch(e => console.error('Dashboard midnight cron failed:', e.message));
+    }, { timezone: 'America/New_York' });
+    console.log('⏰  Market data cron: hourly 8AM–4PM ET + midnight, Mon–Fri');
 
     // Daily cron: 9:35 AM ET (5 min after market open) — options scan (SPY/QQQ/SPX/NDX)
     cron.schedule('35 9 * * 1-5', () => {
