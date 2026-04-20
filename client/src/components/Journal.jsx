@@ -6,6 +6,9 @@ export default function Journal({ trades, highlightId, onHighlightClear, onAddTr
   const [fType,   setFType]   = useState('');
   const [fResult, setFResult] = useState('');
   const [fSort,   setFSort]   = useState('date_desc');
+  const [fBroker, setFBroker] = useState('');
+  const [fFrom,   setFFrom]   = useState('');
+  const [fTo,     setFTo]     = useState('');
   const [expanded, setExpanded] = useState({});
   const highlightRef = useRef(null);
 
@@ -16,6 +19,9 @@ export default function Journal({ trades, highlightId, onHighlightClear, onAddTr
     setFType('');
     setFResult('');
     setFSort('date_desc');
+    setFBroker('');
+    setFFrom('');
+    setFTo('');
     setExpanded(prev => ({ ...prev, [highlightId]: true }));
     // Scroll after render
     const timer = setTimeout(() => {
@@ -29,10 +35,19 @@ export default function Journal({ trades, highlightId, onHighlightClear, onAddTr
   if (fType)          filtered = filtered.filter(t => t.trade_type === fType);
   if (fResult === 'win')  filtered = filtered.filter(t => t.total_gl > 0);
   if (fResult === 'loss') filtered = filtered.filter(t => t.total_gl < 0);
+  if (fBroker)        filtered = filtered.filter(t => (t.broker || 'fidelity') === fBroker);
+  if (fFrom)          filtered = filtered.filter(t => t.date_sold >= fFrom);
+  if (fTo)            filtered = filtered.filter(t => t.date_sold <= fTo);
   if (fSort === 'date_desc') filtered.sort((a, b) => b.date_sold.localeCompare(a.date_sold) || b.id - a.id);
   if (fSort === 'date_asc')  filtered.sort((a, b) => a.date_sold.localeCompare(b.date_sold) || a.id - b.id);
   if (fSort === 'pnl_desc')  filtered.sort((a, b) => b.total_gl - a.total_gl);
   if (fSort === 'pnl_asc')   filtered.sort((a, b) => a.total_gl - b.total_gl);
+
+  // Derive unique brokers from actual data for the dropdown
+  const brokerOptions = [...new Set(trades.map(t => t.broker || 'fidelity'))].sort();
+
+  const hasFilters = search || fType || fResult || fBroker || fFrom || fTo;
+  function clearFilters() { setSearch(''); setFType(''); setFResult(''); setFBroker(''); setFFrom(''); setFTo(''); setFSort('date_desc'); }
 
   function toggleExpand(id) {
     setExpanded(prev => ({ ...prev, [id]: !prev[id] }));
@@ -60,12 +75,27 @@ export default function Journal({ trades, highlightId, onHighlightClear, onAddTr
           <option value="win">Win</option>
           <option value="loss">Loss</option>
         </select>
+        <select value={fBroker} onChange={e => setFBroker(e.target.value)}>
+          <option value="">All Brokers</option>
+          {brokerOptions.map(b => (
+            <option key={b} value={b}>{b.charAt(0).toUpperCase() + b.slice(1)}</option>
+          ))}
+        </select>
+        <input type="date" title="From date" value={fFrom} onChange={e => setFFrom(e.target.value)}
+          style={{ colorScheme: 'dark' }} />
+        <span style={{ color: 'var(--muted)', fontSize: '.8rem', alignSelf: 'center' }}>to</span>
+        <input type="date" title="To date" value={fTo} onChange={e => setFTo(e.target.value)}
+          style={{ colorScheme: 'dark' }} />
         <select value={fSort} onChange={e => setFSort(e.target.value)}>
           <option value="date_desc">Date ↓</option>
           <option value="date_asc">Date ↑</option>
           <option value="pnl_desc">P&amp;L ↓</option>
           <option value="pnl_asc">P&amp;L ↑</option>
         </select>
+        {hasFilters && (
+          <button onClick={clearFilters} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--muted)', padding: '4px 10px', cursor: 'pointer', fontSize: '.8rem' }}
+            title="Clear all filters">✕ Clear</button>
+        )}
       </div>
 
       <div className="table-wrap">
