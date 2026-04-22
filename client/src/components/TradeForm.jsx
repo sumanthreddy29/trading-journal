@@ -42,6 +42,10 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
   const [shotName,     setShotName]    = useState(null);
   const [strike,       setStrike]      = useState('');
   const [broker,       setBroker]      = useState('fidelity');
+  const [tickerEntry,  setTickerEntry] = useState('');
+  const [tickerExit,   setTickerExit]  = useState('');
+  const [entryTime,    setEntryTime]   = useState('');
+  const [exitTime,     setExitTime]    = useState('');
   const [saving,       setSaving]      = useState(false);
   const [rulesList,    setRulesList]   = useState([]);
   const [ruleAdherence,setRuleAdherence] = useState({}); // { rule_id: true|false } or absent = not logged
@@ -64,6 +68,10 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
     setSell(isOpt ? r2((t.sell_price || 0) / 100) : (t.sell_price || 0));
     setStrike(t.strike_price != null ? t.strike_price : '');
     setBroker(t.broker || 'fidelity');
+    setTickerEntry(t.ticker_at_entry != null ? t.ticker_at_entry : '');
+    setTickerExit(t.ticker_at_exit  != null ? t.ticker_at_exit  : '');
+    setEntryTime(t.entry_time || '');
+    setExitTime(t.exit_time  || '');
     setEntryDate(slashToIso(t.date_acquired));
     setExitDate(slashToIso(t.date_sold));
     setTags(t.tags || '');
@@ -108,6 +116,10 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
       sell_price:     type === 'CALL' || type === 'PUT' ? r2((+sell || 0) * 100) : (+sell || 0),
       strike_price:   (type === 'CALL' || type === 'PUT') && strike !== '' ? +strike : null,
       broker:         broker || 'fidelity',
+      ticker_at_entry: tickerEntry !== '' ? +tickerEntry : null,
+      ticker_at_exit:  tickerExit  !== '' ? +tickerExit  : null,
+      entry_time:      entryTime  || null,
+      exit_time:       exitTime   || null,
       date_acquired:  ed,
       date_sold:      xd,
       proceeds,
@@ -195,12 +207,21 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
                     <label>Strike Price</label>
                     <input type="number" value={strike} onChange={e => setStrike(e.target.value)} step="1" placeholder="e.g. 25600" />
                   </div>
-                  <div className="f-group" />
+                  <div className="f-group">
+                    <label>Underlying at Entry <span style={{color:'var(--muted)',fontWeight:400}}>(optional)</span></label>
+                    <input type="number" value={tickerEntry} onChange={e => setTickerEntry(e.target.value)} step="0.01" placeholder="e.g. 19850" />
+                  </div>
+                  <div className="f-group">
+                    <label>Underlying at Exit <span style={{color:'var(--muted)',fontWeight:400}}>(optional)</span></label>
+                    <input type="number" value={tickerExit} onChange={e => setTickerExit(e.target.value)} step="0.01" placeholder="e.g. 19920" />
+                  </div>
                 </div>
               )}
               <div className="form-row">
                 <div className="f-group"><label>Entry Date *</label><input type="date" value={entryDate} onChange={e => setEntryDate(e.target.value)} /></div>
-                <div className="f-group"><label>Exit Date *</label> <input type="date" value={exitDate}  onChange={e => setExitDate(e.target.value)}  /></div>
+                <div className="f-group"><label>Entry Time <span style={{color:'var(--muted)',fontWeight:400}}>(optional)</span></label><input type="time" step="1" value={entryTime} onChange={e => setEntryTime(e.target.value)} style={{colorScheme:'dark'}} /></div>
+                <div className="f-group"><label>Exit Date *</label><input type="date" value={exitDate} onChange={e => setExitDate(e.target.value)} /></div>
+                <div className="f-group"><label>Exit Time <span style={{color:'var(--muted)',fontWeight:400}}>(optional)</span></label><input type="time" step="1" value={exitTime} onChange={e => setExitTime(e.target.value)} style={{colorScheme:'dark'}} /></div>
               </div>
               <div className="form-row full">
                 <div className="f-group">
@@ -226,6 +247,97 @@ export default function TradeForm({ editId, allTrades, onClose, onSaved, onToast
           {/* ── Analysis ── */}
           {tab === 'analysis' && (
             <div>
+              {/* Live Trade Intelligence Panel — only for options with enough data */}
+              {(type === 'CALL' || type === 'PUT') && (+buy > 0) && (() => {
+                const isCall       = type === 'CALL';
+                const sp           = +strike      || null;
+                const te           = +tickerEntry || null;
+                const tx           = +tickerExit  || null;
+                const optBuy       = +buy  || 0; // per-share
+                const optSell      = +sell || 0; // per-share
+                const intrinsic    = sp && te ? Math.max(0, isCall ? te - sp : sp - te) : null;
+                const extrinsic    = intrinsic !== null ? Math.max(0, optBuy - intrinsic) : null;
+                const extrinsicPct = intrinsic !== null && optBuy > 0 ? Math.round(extrinsic / optBuy * 100) : null;
+                const beMoveNeeded = sp && te ? (isCall ? sp + optBuy - te : te - sp - optBuy) : null;
+                const moveCaptured = te && tx ? (isCall ? tx - te : te - tx) : null;
+                const favorable    = moveCaptured !== null ? moveCaptured >= 0 : null;
+                const moneyness    = sp && te
+                  ? (Math.abs(te - sp) < sp * 0.002 ? 'ATM'
+                    : (isCall ? (te > sp ? 'ITM' : 'OTM') : (te < sp ? 'ITM' : 'OTM')))
+                  : null;
+                const moneynessColor = moneyness === 'ITM' ? 'var(--green)' : moneyness === 'OTM' ? 'var(--red)' : 'var(--yellow)';
+                const highExtrinsic  = extrinsicPct !== null && extrinsicPct > 70;
+
+                return (
+                  <div style={{ background: 'var(--surface2)', borderRadius: 10, padding: '14px 16px', marginBottom: 14, border: '1px solid var(--border)' }}>
+                    <div style={{ fontSize: '.7rem', color: 'var(--muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.06em', marginBottom: 10 }}>
+                      ⚡ Trade Intelligence
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 }}>
+
+                      {moneyness && (
+                        <div style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px' }}>
+                          <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>MONEYNESS AT ENTRY</div>
+                          <div style={{ fontSize: '1.2rem', fontWeight: 800, color: moneynessColor }}>{moneyness}</div>
+                          {sp && te && <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 2 }}>Strike {sp} · Underlying {te}</div>}
+                        </div>
+                      )}
+
+                      {intrinsic !== null && (
+                        <div style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px' }}>
+                          <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>INTRINSIC VALUE</div>
+                          <div style={{ fontSize: '1.2rem', fontWeight: 800 }}>${intrinsic.toFixed(2)}</div>
+                          <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 2 }}>of ${optBuy.toFixed(2)} paid</div>
+                        </div>
+                      )}
+
+                      {extrinsic !== null && (
+                        <div style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px', border: highExtrinsic ? '1px solid rgba(239,68,68,.4)' : undefined }}>
+                          <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>TIME VALUE (EXTRINSIC)</div>
+                          <div style={{ fontSize: '1.2rem', fontWeight: 800, color: highExtrinsic ? 'var(--red)' : 'var(--text)' }}>
+                            ${extrinsic.toFixed(2)} <span style={{ fontSize: '.75rem', fontWeight: 400 }}>({extrinsicPct}%)</span>
+                          </div>
+                          {highExtrinsic && <div style={{ fontSize: '.68rem', color: 'var(--red)', marginTop: 2 }}>⚠️ High extrinsic — theta risk</div>}
+                        </div>
+                      )}
+
+                      {beMoveNeeded !== null && (
+                        <div style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px' }}>
+                          <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>BREAKEVEN MOVE NEEDED</div>
+                          <div style={{ fontSize: '1.2rem', fontWeight: 800, color: beMoveNeeded <= 0 ? 'var(--green)' : 'var(--yellow)' }}>
+                            {beMoveNeeded <= 0 ? 'Already ITM' : `+${beMoveNeeded.toFixed(1)} pts`}
+                          </div>
+                          {beMoveNeeded > 0 && <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 2 }}>underlying must move to profit</div>}
+                        </div>
+                      )}
+
+                      {moveCaptured !== null && (
+                        <div style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px' }}>
+                          <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>UNDERLYING MOVE CAUGHT</div>
+                          <div style={{ fontSize: '1.2rem', fontWeight: 800, color: favorable ? 'var(--green)' : 'var(--red)' }}>
+                            {moveCaptured >= 0 ? '+' : ''}{moveCaptured.toFixed(1)} pts
+                          </div>
+                          <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 2 }}>{te} → {tx}</div>
+                        </div>
+                      )}
+
+                      {moveCaptured !== null && beMoveNeeded !== null && (
+                        <div style={{ background: 'var(--bg)', borderRadius: 8, padding: '10px 12px' }}>
+                          <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>MOVE vs BREAKEVEN</div>
+                          <div style={{ fontSize: '1.2rem', fontWeight: 800, color: moveCaptured >= beMoveNeeded ? 'var(--green)' : 'var(--red)' }}>
+                            {moveCaptured >= beMoveNeeded ? '✓ Covered' : '✗ Not covered'}
+                          </div>
+                          <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 2 }}>
+                            Needed {beMoveNeeded.toFixed(1)}, got {moveCaptured.toFixed(1)}
+                          </div>
+                        </div>
+                      )}
+
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div className="form-row full"><div className="f-group"><label>Why I took this trade</label><textarea value={reason}     onChange={e => setReason(e.target.value)}     placeholder="Setup, pattern, signal, thesis…" rows={3} /></div></div>
               <div className="form-row full"><div className="f-group"><label>Market context</label>       <textarea value={context}    onChange={e => setContext(e.target.value)}    placeholder="Market conditions, news, sentiment at the time…" rows={3} /></div></div>
               <div className="form-row full"><div className="f-group"><label>Exit notes</label>            <textarea value={exitNotes}  onChange={e => setExitNotes(e.target.value)}  placeholder="How the trade played out, why I exited…" rows={3} /></div></div>

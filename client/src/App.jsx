@@ -16,7 +16,6 @@ import Toast      from './components/Toast.jsx';
 import Import        from './components/Import.jsx';
 import StockDashboard  from './components/StockDashboard.jsx';
 import OptionsScanner  from './components/OptionsScanner.jsx';
-import SocialBuzz      from './components/SocialBuzz.jsx';
 
 export default function App() {
   const [token,      setToken]      = useState(() => localStorage.getItem('tj_token') || '');
@@ -154,7 +153,6 @@ export default function App() {
           )}
           {page === 'stocks'   && <StockDashboard />}
           {page === 'options'  && <OptionsScanner />}
-          {page === 'social'   && <SocialBuzz />}
         </main>
         <MobileNav page={page} onNav={setPage} onAddTrade={openAddTrade} onLogout={logout} />
       </div>

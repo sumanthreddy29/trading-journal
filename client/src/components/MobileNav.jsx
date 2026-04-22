@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 export default function MobileNav({ page, onNav, onAddTrade, onLogout }) {
   const [drawerOpen, setDrawerOpen] = useState(false);
 
-  const inDrawer = ['export', 'import', 'stocks', 'options', 'social'].includes(page);
+  const inDrawer = ['export', 'import', 'stocks', 'options'].includes(page);
 
   function navAndClose(p) {
     onNav(p);
@@ -27,9 +27,6 @@ export default function MobileNav({ page, onNav, onAddTrade, onLogout }) {
               </button>
               <button className={`mob-drawer-item${page === 'import' ? ' active' : ''}`} onClick={() => navAndClose('import')}>
                 <span className="icon">📥</span>Import
-              </button>
-              <button className={`mob-drawer-item${page === 'social' ? ' active' : ''}`} onClick={() => navAndClose('social')}>
-                <span className="icon">🐦</span>Social
               </button>
               <button className={`mob-drawer-item${page === 'export' ? ' active' : ''}`} onClick={() => navAndClose('export')}>
                 <span className="icon">📤</span>Export

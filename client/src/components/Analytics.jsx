@@ -116,6 +116,171 @@ function computeHoldStats(trades) {
   return { avg, max, min, same, total: holds.length };
 }
 
+// ── Intraday hold duration analysis ─────────────
+function timeToSecs(t) {
+  if (!t) return null;
+  const parts = t.split(':').map(Number);
+  return parts[0] * 3600 + (parts[1] || 0) * 60 + (parts[2] || 0);
+}
+
+function fDuration(secs) {
+  if (secs == null || secs < 0) return '—';
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+
+function computeIntradayStats(trades) {
+  const withTime = trades.filter(t => t.entry_time && t.exit_time);
+  if (!withTime.length) return null;
+
+  const rows = withTime.map(t => {
+    const enS = timeToSecs(t.entry_time);
+    const exS = timeToSecs(t.exit_time);
+    const dur = exS != null && enS != null ? exS - enS : null;
+    return { ...t, durSecs: dur };
+  }).filter(r => r.durSecs != null && r.durSecs >= 0);
+
+  if (!rows.length) return null;
+
+  const wins   = rows.filter(r => r.total_gl > 0);
+  const losses = rows.filter(r => r.total_gl < 0);
+  const avg    = arr => arr.length ? Math.round(arr.reduce((s, r) => s + r.durSecs, 0) / arr.length) : null;
+
+  // Bucket by hold duration: <5m, 5–15m, 15–60m, >1h
+  const buckets = [
+    { label: '< 5 min',   min: 0,    max: 300,   rows: [] },
+    { label: '5–15 min',  min: 300,  max: 900,   rows: [] },
+    { label: '15–60 min', min: 900,  max: 3600,  rows: [] },
+    { label: '> 1 hour',  min: 3600, max: Infinity, rows: [] },
+  ];
+  rows.forEach(r => {
+    const b = buckets.find(b => r.durSecs >= b.min && r.durSecs < b.max);
+    if (b) b.rows.push(r);
+  });
+  const bucketStats = buckets
+    .filter(b => b.rows.length)
+    .map(b => ({
+      label:  b.label,
+      total:  b.rows.length,
+      wins:   b.rows.filter(r => r.total_gl > 0).length,
+      losses: b.rows.filter(r => r.total_gl < 0).length,
+      pnl:    r2(b.rows.reduce((s, r) => s + r.total_gl, 0)),
+    }));
+
+  // Hour-of-day entry analysis (which entry hour performs best)
+  const hourMap = {};
+  rows.forEach(r => {
+    const h = Math.floor(timeToSecs(r.entry_time) / 3600);
+    const lbl = `${h % 12 || 12}${h < 12 ? 'am' : 'pm'}`;
+    if (!hourMap[lbl]) hourMap[lbl] = { wins: 0, losses: 0, total: 0, pnl: 0, hour: h };
+    hourMap[lbl].total++;
+    hourMap[lbl].pnl = r2(hourMap[lbl].pnl + r.total_gl);
+    if (r.total_gl > 0) hourMap[lbl].wins++;
+    else if (r.total_gl < 0) hourMap[lbl].losses++;
+  });
+  const hourStats = Object.entries(hourMap)
+    .sort(([, a], [, b]) => a.hour - b.hour)
+    .map(([label, v]) => ({ label, ...v }));
+
+  return {
+    total:       rows.length,
+    avgDurAll:   avg(rows),
+    avgDurWins:  avg(wins),
+    avgDurLoss:  avg(losses),
+    bucketStats,
+    hourStats,
+  };
+}
+
+// ── Options entry quality analysis ───────────────
+function computeOptionsEntryAnalysis(trades) {
+  // Only trades with underlying entry price + strike — the new fields
+  const optTrades = trades.filter(t =>
+    (t.trade_type === 'CALL' || t.trade_type === 'PUT') &&
+    t.ticker_at_entry != null && t.strike_price != null && t.buy_price > 0
+  );
+  if (!optTrades.length) return null;
+
+  const isCall = t => t.trade_type === 'CALL';
+
+  function getMoneyness(t) {
+    const { ticker_at_entry: te, strike_price: sp } = t;
+    if (Math.abs(te - sp) < sp * 0.002) return 'ATM';
+    return isCall(t) ? (te > sp ? 'ITM' : 'OTM') : (te < sp ? 'ITM' : 'OTM');
+  }
+
+  function getIntrinsic(t) {
+    const { ticker_at_entry: te, strike_price: sp } = t;
+    return Math.max(0, isCall(t) ? te - sp : sp - te);
+  }
+
+  function getExtrinsicPct(t) {
+    const buyPerShare = (t.buy_price || 0) / 100;
+    if (!buyPerShare) return null;
+    const intrinsic = getIntrinsic(t);
+    const extrinsic = Math.max(0, buyPerShare - intrinsic);
+    return Math.round(extrinsic / buyPerShare * 100);
+  }
+
+  // Moneyness groups
+  const mGroups = { ITM: [], ATM: [], OTM: [] };
+  optTrades.forEach(t => mGroups[getMoneyness(t)].push(t));
+  const mStats = Object.entries(mGroups).map(([label, arr]) => {
+    if (!arr.length) return null;
+    const wins = arr.filter(t => t.total_gl > 0).length;
+    const pnl  = r2(arr.reduce((s, t) => s + t.total_gl, 0));
+    return { label, total: arr.length, wins, losses: arr.filter(t => t.total_gl < 0).length, pnl, avgPnl: r2(pnl / arr.length) };
+  }).filter(Boolean);
+
+  // Move captured — only trades that also have ticker_at_exit
+  const withMove = optTrades.filter(t => t.ticker_at_exit != null);
+  const moveStats = withMove.length ? (() => {
+    const wins   = withMove.filter(t => t.total_gl > 0);
+    const losses = withMove.filter(t => t.total_gl < 0);
+    const avgFav = arr => arr.length
+      ? r2(arr.reduce((s, t) => s + (isCall(t) ? t.ticker_at_exit - t.ticker_at_entry : t.ticker_at_entry - t.ticker_at_exit), 0) / arr.length)
+      : null;
+    const avgAbs = arr => arr.length
+      ? r2(arr.reduce((s, t) => s + Math.abs(isCall(t) ? t.ticker_at_exit - t.ticker_at_entry : t.ticker_at_entry - t.ticker_at_exit), 0) / arr.length)
+      : null;
+    return { total: withMove.length, avgMoveWins: avgFav(wins), avgMoveLosses: avgFav(losses), avgAbsMove: avgAbs(withMove) };
+  })() : null;
+
+  // Extrinsic buckets — uses optTrades (all have entry price so intrinsic is accurate)
+  const extBuckets = { 'Low <30%': [], 'Mid 30–70%': [], 'High >70%': [] };
+  optTrades.forEach(t => {
+    const pct = getExtrinsicPct(t);
+    if (pct === null) return;
+    if (pct < 30)      extBuckets['Low <30%'].push(t);
+    else if (pct < 70) extBuckets['Mid 30–70%'].push(t);
+    else               extBuckets['High >70%'].push(t);
+  });
+  const extStats = Object.entries(extBuckets).map(([label, arr]) => {
+    if (!arr.length) return null;
+    const wins = arr.filter(t => t.total_gl > 0).length;
+    const pnl  = r2(arr.reduce((s, t) => s + t.total_gl, 0));
+    return { label, total: arr.length, wins, pnl };
+  }).filter(Boolean);
+
+  // CALL vs PUT breakdown
+  const typeGroups = {};
+  optTrades.forEach(t => {
+    const k = t.trade_type;
+    if (!typeGroups[k]) typeGroups[k] = { wins: 0, losses: 0, total: 0, pnl: 0 };
+    typeGroups[k].total++;
+    typeGroups[k].pnl = r2(typeGroups[k].pnl + t.total_gl);
+    if (t.total_gl > 0) typeGroups[k].wins++;
+    else if (t.total_gl < 0) typeGroups[k].losses++;
+  });
+  const typeStats = Object.entries(typeGroups).map(([label, v]) => ({ label, ...v, avgPnl: r2(v.pnl / v.total) }));
+
+  return { mStats, moveStats, extStats, typeStats, total: optTrades.length, withMoveCount: withMove.length };
+}
+
 // ── Small UI primitives ───────────────────────────
 
 function Card({ label, value, sub, color }) {
@@ -200,6 +365,8 @@ export default function Analytics({ trades, data }) {
   const monthly  = useMemo(() => computeMonthly(trades),  [trades]);
   const byTag    = useMemo(() => computeByTag(trades),    [trades]);
   const holdStats= useMemo(() => computeHoldStats(trades),[trades]);
+  const optEntry    = useMemo(() => computeOptionsEntryAnalysis(trades), [trades]);
+  const intradayStats = useMemo(() => computeIntradayStats(trades), [trades]);
 
   // Daily P&L values for histogram
   const dailyPnlVals = useMemo(() => {
@@ -519,6 +686,201 @@ export default function Analytics({ trades, data }) {
             How often your results land in each profit/loss range
           </div>
           <canvas ref={histRef} style={{ width: '100%' }} />
+        </div>
+      )}
+
+      {/* ── Options Entry Analysis ── */}
+      {optEntry && (
+        <div style={{ marginTop: 14 }}>
+          <div className="chart-card" style={{ marginBottom: 14 }}>
+            <SectionHeader dot="var(--orange)" title={`Options Entry Analysis · ${optEntry.total} trades with underlying entry price`} />
+
+            {/* Moneyness breakdown */}
+            <div style={{ fontSize: '.72rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8, marginTop: 4 }}>
+              Win Rate by Moneyness at Entry
+            </div>
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+              {optEntry.mStats.map(r => {
+                const wr = r.total ? Math.round(r.wins / r.total * 100) : 0;
+                const col = r.label === 'ITM' ? 'var(--green)' : r.label === 'OTM' ? 'var(--red)' : 'var(--yellow)';
+                return (
+                  <div key={r.label} style={{ flex: 1, minWidth: 120, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px', border: `1px solid ${col}44` }}>
+                    <div style={{ fontSize: '.68rem', color: 'var(--muted)', marginBottom: 4 }}>
+                      {r.label} <span style={{ color: 'var(--muted)' }}>({r.total} trades)</span>
+                    </div>
+                    <div style={{ fontSize: '1.5rem', fontWeight: 800, color: col }}>{wr}%</div>
+                    <div style={{ marginTop: 6 }}><WinBar wins={r.wins} total={r.total} /></div>
+                    <div style={{ fontSize: '.7rem', color: r.pnl >= 0 ? 'var(--green)' : 'var(--red)', marginTop: 6, fontWeight: 600 }}>
+                      {fMoney(r.pnl, true)} net · {fMoney(r.avgPnl, true)} avg
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Extrinsic paid breakdown */}
+            {optEntry.extStats.length > 0 && (
+              <>
+                <div style={{ fontSize: '.72rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+                  Win Rate by Premium Composition (Extrinsic % of Premium Paid)
+                </div>
+                <div style={{ fontSize: '.72rem', color: 'var(--muted)', marginBottom: 10 }}>
+                  High extrinsic = mostly time value — theta works against you on holds
+                </div>
+                <table style={{ width: '100%', fontSize: '.82rem', borderCollapse: 'collapse', marginBottom: 16 }}>
+                  <thead>
+                    <tr style={{ color: 'var(--muted)', fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                      <th style={{ textAlign: 'left', paddingBottom: 8 }}>Extrinsic Bucket</th>
+                      <th style={{ textAlign: 'right', paddingBottom: 8 }}>Trades</th>
+                      <th style={{ textAlign: 'left', paddingBottom: 8, paddingLeft: 12 }}>Win Rate</th>
+                      <th style={{ textAlign: 'right', paddingBottom: 8 }}>Net P&L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {optEntry.extStats.map(r => (
+                      <tr key={r.label} style={{ borderTop: '1px solid var(--border)' }}>
+                        <td style={{ padding: '8px 0', fontWeight: 600 }}>
+                          <span style={{
+                            background: r.label.startsWith('High') ? 'rgba(239,68,68,.15)' : r.label.startsWith('Low') ? 'rgba(34,197,94,.15)' : 'rgba(234,179,8,.15)',
+                            color: r.label.startsWith('High') ? 'var(--red)' : r.label.startsWith('Low') ? 'var(--green)' : 'var(--yellow)',
+                            padding: '2px 8px', borderRadius: 4, fontSize: '.78rem'
+                          }}>{r.label}</span>
+                        </td>
+                        <td style={{ textAlign: 'right', color: 'var(--muted)' }}>{r.total}</td>
+                        <td style={{ paddingLeft: 12, minWidth: 120 }}><WinBar wins={r.wins} total={r.total} /></td>
+                        <td style={{ textAlign: 'right', fontWeight: 700, color: r.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                          {fMoney(r.pnl, true)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+
+            {/* Move captured on wins vs losses */}
+            {optEntry.moveStats && (
+              <>
+                <div style={{ fontSize: '.72rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+                  Underlying Move Captured — Wins vs Losses
+                </div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: 140, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG MOVE ON WINS</div>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--green)' }}>
+                      {optEntry.moveStats.avgMoveWins !== null ? `+${optEntry.moveStats.avgMoveWins.toFixed(1)} pts` : '—'}
+                    </div>
+                    <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 3 }}>favorable direction</div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 140, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG MOVE ON LOSSES</div>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--red)' }}>
+                      {optEntry.moveStats.avgMoveLosses !== null ? `${optEntry.moveStats.avgMoveLosses.toFixed(1)} pts` : '—'}
+                    </div>
+                    <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 3 }}>favorable direction</div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 140, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG ABS MOVE</div>
+                    <div style={{ fontSize: '1.4rem', fontWeight: 800 }}>
+                      {optEntry.moveStats.avgAbsMove !== null ? `${optEntry.moveStats.avgAbsMove.toFixed(1)} pts` : '—'}
+                    </div>
+                    <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 3 }}>across {optEntry.moveStats.total} trades</div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Intraday Hold Duration Analysis ── */}
+      {intradayStats && (
+        <div style={{ marginTop: 14 }}>
+          <div className="chart-card">
+            <SectionHeader dot="var(--cyan)" title={`Intraday Hold Duration · ${intradayStats.total} trades with entry & exit times`} />
+
+            {/* Summary cards */}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16, marginTop: 4 }}>
+              <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG HOLD — ALL</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800 }}>{fDuration(intradayStats.avgDurAll)}</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG HOLD — WINS</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--green)' }}>{fDuration(intradayStats.avgDurWins)}</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG HOLD — LOSSES</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--red)' }}>{fDuration(intradayStats.avgDurLoss)}</div>
+              </div>
+            </div>
+
+            {/* Duration buckets */}
+            <div style={{ fontSize: '.72rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+              Win Rate by Hold Duration
+            </div>
+            <table style={{ width: '100%', fontSize: '.82rem', borderCollapse: 'collapse', marginBottom: 16 }}>
+              <thead>
+                <tr style={{ color: 'var(--muted)', fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                  <th style={{ textAlign: 'left', paddingBottom: 8 }}>Duration</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Trades</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Wins</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Losses</th>
+                  <th style={{ textAlign: 'left', paddingBottom: 8, paddingLeft: 12 }}>Win Rate</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Net P&L</th>
+                </tr>
+              </thead>
+              <tbody>
+                {intradayStats.bucketStats.map(b => (
+                  <tr key={b.label} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ padding: '8px 0', fontWeight: 600 }}>{b.label}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--muted)' }}>{b.total}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--green)' }}>{b.wins}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--red)' }}>{b.losses}</td>
+                    <td style={{ paddingLeft: 12, minWidth: 120 }}><WinBar wins={b.wins} total={b.total} /></td>
+                    <td style={{ textAlign: 'right', fontWeight: 700, color: b.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {fMoney(b.pnl, true)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {/* Entry hour breakdown */}
+            {intradayStats.hourStats.length > 1 && (
+              <>
+                <div style={{ fontSize: '.72rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+                  Performance by Entry Hour
+                </div>
+                <table style={{ width: '100%', fontSize: '.82rem', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr style={{ color: 'var(--muted)', fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                      <th style={{ textAlign: 'left', paddingBottom: 8 }}>Hour</th>
+                      <th style={{ textAlign: 'right', paddingBottom: 8 }}>Trades</th>
+                      <th style={{ textAlign: 'left', paddingBottom: 8, paddingLeft: 12 }}>Win Rate</th>
+                      <th style={{ textAlign: 'right', paddingBottom: 8 }}>Net P&L</th>
+                      <th style={{ textAlign: 'right', paddingBottom: 8 }}>Avg P&L</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {intradayStats.hourStats.map(h => (
+                      <tr key={h.label} style={{ borderTop: '1px solid var(--border)' }}>
+                        <td style={{ padding: '8px 0', fontWeight: 600 }}>{h.label}</td>
+                        <td style={{ textAlign: 'right', color: 'var(--muted)' }}>{h.total}</td>
+                        <td style={{ paddingLeft: 12, minWidth: 120 }}><WinBar wins={h.wins} total={h.total} /></td>
+                        <td style={{ textAlign: 'right', fontWeight: 700, color: h.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                          {fMoney(h.pnl, true)}
+                        </td>
+                        <td style={{ textAlign: 'right', color: (h.pnl / h.total) >= 0 ? 'var(--green)' : 'var(--red)', fontSize: '.78rem' }}>
+                          {fMoney(r2(h.pnl / h.total), true)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+          </div>
         </div>
       )}
     </div>

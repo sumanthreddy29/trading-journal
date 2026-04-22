@@ -159,6 +159,21 @@ export default function Journal({ trades, highlightId, onHighlightClear, onAddTr
                     <tr className="trade-expand">
                       <td colSpan="10">
                         <div className="expand-grid">
+                          {(t.ticker_at_entry != null || t.ticker_at_exit != null) && (
+                            <div className="expand-block">
+                              <label>📈 Underlying Move Captured</label>
+                              <p style={{ fontFamily: 'monospace', fontSize: '.92rem' }}>
+                                {t.ticker_at_entry != null ? `Entry: ${t.ticker_at_entry}` : 'Entry: —'}
+                                {' → '}
+                                {t.ticker_at_exit != null ? `Exit: ${t.ticker_at_exit}` : 'Exit: —'}
+                                {t.ticker_at_entry != null && t.ticker_at_exit != null && (
+                                  <span style={{ marginLeft: 10, fontWeight: 700, color: (t.ticker_at_exit - t.ticker_at_entry) >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                                    ({(t.ticker_at_exit - t.ticker_at_entry) >= 0 ? '+' : ''}{(t.ticker_at_exit - t.ticker_at_entry).toFixed(2)} pts)
+                                  </span>
+                                )}
+                              </p>
+                            </div>
+                          )}
                           {t.entry_reason   && <div className="expand-block"><label>📌 Why I took this trade</label><p dangerouslySetInnerHTML={{ __html: esc(t.entry_reason) }} /></div>}
                           {t.market_context && <div className="expand-block"><label>🌐 Market context</label><p dangerouslySetInnerHTML={{ __html: esc(t.market_context) }} /></div>}
                           {t.exit_notes     && <div className="expand-block"><label>📤 Exit notes</label><p dangerouslySetInnerHTML={{ __html: esc(t.exit_notes) }} /></div>}

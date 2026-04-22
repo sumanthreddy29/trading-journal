@@ -140,6 +140,18 @@ async function initDB() {
   await pool.query(`
     UPDATE trades SET broker = 'fidelity' WHERE broker IS NULL OR broker = '';
   `);
+  await pool.query(`
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS ticker_at_entry REAL;
+  `);
+  await pool.query(`
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS ticker_at_exit REAL;
+  `);
+  await pool.query(`
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS entry_time TEXT;
+  `);
+  await pool.query(`
+    ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_time TEXT;
+  `);
   // Create dashboard cache table for daily auto-refresh
   await pool.query(`
     CREATE TABLE IF NOT EXISTS dashboard_cache (
@@ -255,11 +267,14 @@ app.post('/api/trades', auth, async (req, res) => {
       proceeds, cost_basis, total_gl,
       same_day, is_ndx, lt_gl, st_gl, status,
       entry_reason, market_context, exit_notes, failure_reason,
-      screenshot_b64, screenshot_name, tags, strike_price, broker
+      screenshot_b64, screenshot_name, tags, strike_price, broker,
+      ticker_at_entry, ticker_at_exit,
+      entry_time, exit_time
     ) VALUES (
       $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,
       $11,$12,$13,$14,$15,$16,$17,$18,
-      $19,$20,$21,$22,$23,$24,$25,$26,$27
+      $19,$20,$21,$22,$23,$24,$25,$26,$27,
+      $28,$29,$30,$31
     ) RETURNING id`,
     [
       req.user.id,
@@ -289,6 +304,10 @@ app.post('/api/trades', auth, async (req, res) => {
       t.tags            || null,
       t.strike_price     ?? null,
       t.broker          || 'fidelity',
+      t.ticker_at_entry  ?? null,
+      t.ticker_at_exit   ?? null,
+      t.entry_time       || null,
+      t.exit_time        || null,
     ]
   );
   res.status(201).json({ id: result.rows[0].id, ...t });
@@ -314,8 +333,10 @@ app.put('/api/trades/:id', auth, async (req, res) => {
       same_day=$13, is_ndx=$14, lt_gl=$15, st_gl=$16, status=$17,
       entry_reason=$18, market_context=$19, exit_notes=$20, failure_reason=$21,
       screenshot_b64=$22, screenshot_name=$23, tags=$24, strike_price=$25, broker=$26,
+      ticker_at_entry=$27, ticker_at_exit=$28,
+      entry_time=$29, exit_time=$30,
       updated_at=NOW()
-    WHERE id=$27 AND user_id=$28`,
+    WHERE id=$31 AND user_id=$32`,
     [
       m(t.symbol,       e.symbol)?.toUpperCase(),
       m(t.base_symbol,  e.base_symbol)?.toUpperCase(),
@@ -343,6 +364,10 @@ app.put('/api/trades/:id', auth, async (req, res) => {
       m(t.tags,             e.tags),
       t.strike_price !== undefined ? t.strike_price : e.strike_price,
       m(t.broker, e.broker) || 'fidelity',
+      t.ticker_at_entry !== undefined ? t.ticker_at_entry : e.ticker_at_entry,
+      t.ticker_at_exit  !== undefined ? t.ticker_at_exit  : e.ticker_at_exit,
+      t.entry_time !== undefined ? (t.entry_time || null) : e.entry_time,
+      t.exit_time  !== undefined ? (t.exit_time  || null) : e.exit_time,
       req.params.id,
       req.user.id,
     ]
