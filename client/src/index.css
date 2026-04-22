@@ -2,7 +2,7 @@
   --bg: #0b0e1a; --surface: #111827; --surface2: #1a2035; --border: #1f2d4a;
   --text: #e2e8f0; --muted: #6b7fa3; --green: #22c55e; --red: #ef4444;
   --blue: #3b82f6; --cyan: #06b6d4; --orange: #f97316; --purple: #a855f7;
-  --yellow: #eab308; --radius: 12px; --sidebar: 200px;
+  --yellow: #eab308; --radius: 12px; --sidebar: 200px; --sidebar-collapsed: 56px;
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body { background: var(--bg); color: var(--text); font-family: system-ui, -apple-system, sans-serif; font-size: 14px; min-height: 100vh; }
@@ -41,6 +41,22 @@ textarea { resize: vertical; }
 .nav-logout { padding: 9px 12px; border-radius: 8px; cursor: pointer; color: var(--red); background: none; border: none; width: 100%; text-align: left; font-size: .85rem; display: flex; align-items: center; gap: 8px; }
 .nav-logout:hover { background: rgba(239,68,68,.1); }
 #main { flex: 1; overflow: auto; padding: 24px; min-width: 0; }
+
+/* ── Collapsed sidebar (medium screens 801–1280px) ── */
+@media (max-width: 1280px) and (min-width: 801px) {
+  :root { --sidebar: var(--sidebar-collapsed); }
+  #sidebar { width: var(--sidebar-collapsed); padding: 12px 6px; align-items: center; overflow: visible; }
+  #sidebar .brand { font-size: 1.3rem; padding: 8px 0; text-align: center; width: 100%; margin-bottom: 8px; }
+  #sidebar .brand .nav-label { display: none; }
+  #sidebar .nav-btn { padding: 10px; justify-content: center; width: 40px; height: 40px; font-size: 1.1rem; position: relative; border-radius: 10px; }
+  #sidebar .nav-btn .nav-label { display: none; }
+  #sidebar .nav-btn.add-trade { width: 40px; font-size: 1rem; }
+  #sidebar .nav-user { padding: 8px 0; text-align: center; font-size: 1rem; }
+  #sidebar .nav-user .nav-label { display: none; }
+  #sidebar .nav-logout { width: 40px; height: 40px; padding: 10px; justify-content: center; border-radius: 10px; }
+  #sidebar .nav-logout .nav-label { display: none; }
+  /* Native tooltip via title attr shows on hover */
+}
 
 /* ── KPI Cards ──────────────────────────────── */
 .kpi-row { display: grid; gap: 12px; margin-bottom: 14px; }
@@ -98,7 +114,10 @@ canvas { width: 100%; display: block; }
 .cal-section-title { font-size: .9rem; font-weight: 600; }
 .cal-section-sub { font-size: .78rem; color: var(--muted); }
 .cal-months-wrap { display: flex; gap: 14px; flex-wrap: wrap; }
-.cal-month-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; flex: 1; min-width: 280px; }
+.cal-month-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; flex: 1 1 calc(33.333% - 10px); min-width: 260px; max-width: calc(33.333% - 10px); }
+@media (min-width: 1700px) {
+  .cal-month-card { flex: 1 1 calc(25% - 11px); max-width: calc(25% - 11px); }
+}
 .cal-month-name { text-align: center; font-size: .9rem; font-weight: 700; color: var(--cyan); margin-bottom: 12px; }
 .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
 .cal-dow { text-align: center; font-size: .65rem; color: var(--muted); padding: 4px 0; font-weight: 600; }
