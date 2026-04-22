@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { fMoney, fY, r2 } from '../utils/helpers.js';
-import { drawHistogram, drawDOW } from '../utils/canvas.js';
+import { drawHistogram, drawDOW, drawBars, drawMoveBars } from '../utils/canvas.js';
 
 // ── Pure-computation helpers ──────────────────────
 
@@ -150,13 +150,27 @@ function computeIntradayStats(trades) {
   const losses = rows.filter(r => r.total_gl < 0);
   const avg    = arr => arr.length ? Math.round(arr.reduce((s, r) => s + r.durSecs, 0) / arr.length) : null;
 
-  // Bucket by hold duration: <5m, 5–15m, 15–60m, >1h
-  const buckets = [
-    { label: '< 5 min',   min: 0,    max: 300,   rows: [] },
-    { label: '5–15 min',  min: 300,  max: 900,   rows: [] },
-    { label: '15–60 min', min: 900,  max: 3600,  rows: [] },
-    { label: '> 1 hour',  min: 3600, max: Infinity, rows: [] },
-  ];
+  // Dynamic buckets: every 30s up to 3 min, then every 1 min beyond 3 min
+  const maxDur = rows.length ? Math.max(...rows.map(r => r.durSecs)) : 0;
+  function fBucketLabel(s1, s2) {
+    const fmt = s => {
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60), rem = s % 60;
+      return rem ? `${m}m ${rem}s` : `${m}m`;
+    };
+    return `${fmt(s1)} – ${fmt(s2)}`;
+  }
+  const buckets = [];
+  // 30s increments from 0 to 3 min
+  for (let s = 0; s < 180; s += 30) {
+    buckets.push({ label: fBucketLabel(s, s + 30), min: s, max: s + 30, rows: [] });
+  }
+  // 1 min increments from 3 min up to max duration
+  if (maxDur >= 180) {
+    for (let s = 180; s <= maxDur; s += 60) {
+      buckets.push({ label: fBucketLabel(s, s + 60), min: s, max: s + 60, rows: [] });
+    }
+  }
   rows.forEach(r => {
     const b = buckets.find(b => r.durSecs >= b.min && r.durSecs < b.max);
     if (b) b.rows.push(r);
@@ -196,7 +210,163 @@ function computeIntradayStats(trades) {
   };
 }
 
-// ── Options entry quality analysis ───────────────
+// ── Premium (buy/sell price) profitability analysis ─────
+function computePremiumAnalysis(trades) {
+  // Only options trades with a buy price
+  const opts = trades.filter(t =>
+    (t.trade_type === 'CALL' || t.trade_type === 'PUT') && t.buy_price > 0
+  );
+  if (!opts.length) return null;
+
+  // buy_price / sell_price are stored in cents for options → /100 = $/share display
+  const rows = opts.map(t => ({
+    ...t,
+    buyD:   t.buy_price / 100,
+    sellD:  (t.sell_price || 0) / 100,
+    retPct: r2(((t.sell_price || 0) - t.buy_price) / t.buy_price * 100),
+  }));
+
+  const wins   = rows.filter(r => r.total_gl > 0);
+  const losses = rows.filter(r => r.total_gl < 0);
+  const avgBuy  = arr => arr.length ? r2(arr.reduce((s, r) => s + r.buyD,  0) / arr.length) : null;
+  const avgSell = arr => arr.length ? r2(arr.reduce((s, r) => s + r.sellD, 0) / arr.length) : null;
+  const avgRet  = arr => arr.length ? r2(arr.reduce((s, r) => s + r.retPct, 0) / arr.length) : null;
+
+  // Premium tiers (buy_price stored in cents)
+  const tiers = [
+    { label: '< $0.50',   min: 0,   max: 50   },
+    { label: '$0.50–$1',  min: 50,  max: 100  },
+    { label: '$1–$2',     min: 100, max: 200  },
+    { label: '$2–$5',     min: 200, max: 500  },
+    { label: '> $5',      min: 500, max: Infinity },
+  ].map(t => ({ ...t, rows: [] }));
+
+  rows.forEach(r => {
+    const t = tiers.find(t => r.buy_price >= t.min && r.buy_price < t.max);
+    if (t) t.rows.push(r);
+  });
+
+  const tierStats = tiers
+    .filter(t => t.rows.length)
+    .map(t => ({
+      label:   t.label,
+      total:   t.rows.length,
+      wins:    t.rows.filter(r => r.total_gl > 0).length,
+      losses:  t.rows.filter(r => r.total_gl < 0).length,
+      pnl:     r2(t.rows.reduce((s, r) => s + r.total_gl, 0)),
+      avgBuy:  r2(t.rows.reduce((s, r) => s + r.buyD,  0) / t.rows.length),
+      avgSell: r2(t.rows.reduce((s, r) => s + r.sellD, 0) / t.rows.length),
+      avgRet:  avgRet(t.rows),
+    }));
+
+  return {
+    total:       rows.length,
+    avgBuyWins:  avgBuy(wins),
+    avgBuyLoss:  avgBuy(losses),
+    avgSellWins: avgSell(wins),
+    avgSellLoss: avgSell(losses),
+    avgRetWins:  avgRet(wins),
+    avgRetLoss:  avgRet(losses),
+    tierStats,
+  };
+}
+
+// ── NDX-specific deep analysis ───────────────────
+const NDX_SET = new Set(['NDX', 'NDXP', 'NDXS']);
+function computeNdxAnalysis(trades) {
+  const ndx = trades.filter(t =>
+    NDX_SET.has((t.symbol || '').toUpperCase()) &&
+    (t.trade_type === 'CALL' || t.trade_type === 'PUT') &&
+    t.buy_price > 0
+  );
+  if (!ndx.length) return null;
+
+  const rows = ndx.map(t => ({
+    ...t,
+    buyD:   t.buy_price / 100,
+    sellD:  (t.sell_price || 0) / 100,
+    retPct: r2(((t.sell_price || 0) - t.buy_price) / t.buy_price * 100),
+    durSecs: (t.entry_time && t.exit_time)
+      ? timeToSecs(t.exit_time) - timeToSecs(t.entry_time) : null,
+  }));
+
+  const wins   = rows.filter(r => r.total_gl > 0);
+  const losses = rows.filter(r => r.total_gl < 0);
+  const neutral = rows.filter(r => r.total_gl === 0);
+  const avg = arr => arr.length ? r2(arr.reduce((s, r) => s + r.total_gl, 0) / arr.length) : null;
+  const avgPct = arr => arr.length ? r2(arr.reduce((s, r) => s + r.retPct, 0) / arr.length) : null;
+
+  const totalPnl = r2(rows.reduce((s, r) => s + r.total_gl, 0));
+
+  // Premium tiers (NDX above $30 common → extend tiers)
+  const tiers = [
+    { label: '$1–$5',    min: 100,  max: 500   },
+    { label: '$5–$10',   min: 500,  max: 1000  },
+    { label: '$10–$20',  min: 1000, max: 2000  },
+    { label: '$20–$30',  min: 2000, max: 3000  },
+    { label: '$30–$50',  min: 3000, max: 5000  },
+    { label: '$50–$100', min: 5000, max: 10000 },
+    { label: '> $100',   min: 10000, max: Infinity },
+  ].map(t => ({ ...t, rows: [] }));
+  rows.forEach(r => {
+    const t = tiers.find(t => r.buy_price >= t.min && r.buy_price < t.max);
+    if (t) t.rows.push(r);
+  });
+  const tierStats = tiers.filter(t => t.rows.length).map(t => ({
+    label:   t.label,
+    total:   t.rows.length,
+    wins:    t.rows.filter(r => r.total_gl > 0).length,
+    losses:  t.rows.filter(r => r.total_gl < 0).length,
+    pnl:     r2(t.rows.reduce((s, r) => s + r.total_gl, 0)),
+    avgBuy:  r2(t.rows.reduce((s, r) => s + r.buyD,  0) / t.rows.length),
+    avgSell: r2(t.rows.reduce((s, r) => s + r.sellD, 0) / t.rows.length),
+    avgRet:  avgPct(t.rows),
+  }));
+
+  // CALL vs PUT breakdown
+  const calls = rows.filter(r => r.trade_type === 'CALL');
+  const puts  = rows.filter(r => r.trade_type === 'PUT');
+  const typeStats = [
+    { label: 'CALL', rows: calls },
+    { label: 'PUT',  rows: puts  },
+  ].filter(t => t.rows.length).map(t => ({
+    label:  t.label,
+    total:  t.rows.length,
+    wins:   t.rows.filter(r => r.total_gl > 0).length,
+    losses: t.rows.filter(r => r.total_gl < 0).length,
+    pnl:    r2(t.rows.reduce((s, r) => s + r.total_gl, 0)),
+    avgRet: avgPct(t.rows),
+  }));
+
+  // Duration stats (only trades with both times)
+  const withDur = rows.filter(r => r.durSecs != null && r.durSecs >= 0);
+  const avgDurWins  = withDur.filter(r => r.total_gl > 0).length
+    ? Math.round(withDur.filter(r => r.total_gl > 0).reduce((s, r) => s + r.durSecs, 0) / withDur.filter(r => r.total_gl > 0).length) : null;
+  const avgDurLoss  = withDur.filter(r => r.total_gl < 0).length
+    ? Math.round(withDur.filter(r => r.total_gl < 0).reduce((s, r) => s + r.durSecs, 0) / withDur.filter(r => r.total_gl < 0).length) : null;
+
+  return {
+    total: rows.length,
+    wins: wins.length,
+    losses: losses.length,
+    neutral: neutral.length,
+    totalPnl,
+    avgPnlWin:  avg(wins),
+    avgPnlLoss: avg(losses),
+    avgRetWins:  avgPct(wins),
+    avgRetLoss:  avgPct(losses),
+    avgBuyWins:  wins.length  ? r2(wins.reduce((s,r)=>s+r.buyD,0)/wins.length)   : null,
+    avgBuyLoss:  losses.length? r2(losses.reduce((s,r)=>s+r.buyD,0)/losses.length): null,
+    avgSellWins: wins.length  ? r2(wins.reduce((s,r)=>s+r.sellD,0)/wins.length)  : null,
+    avgSellLoss: losses.length? r2(losses.reduce((s,r)=>s+r.sellD,0)/losses.length):null,
+    avgDurWins,
+    avgDurLoss,
+    tierStats,
+    typeStats,
+  };
+}
+
+// ── Options entry quality analysis ───────────────────
 function computeOptionsEntryAnalysis(trades) {
   // Only trades with underlying entry price + strike — the new fields
   const optTrades = trades.filter(t =>
@@ -241,13 +411,27 @@ function computeOptionsEntryAnalysis(trades) {
   const moveStats = withMove.length ? (() => {
     const wins   = withMove.filter(t => t.total_gl > 0);
     const losses = withMove.filter(t => t.total_gl < 0);
-    const avgFav = arr => arr.length
-      ? r2(arr.reduce((s, t) => s + (isCall(t) ? t.ticker_at_exit - t.ticker_at_entry : t.ticker_at_entry - t.ticker_at_exit), 0) / arr.length)
-      : null;
-    const avgAbs = arr => arr.length
-      ? r2(arr.reduce((s, t) => s + Math.abs(isCall(t) ? t.ticker_at_exit - t.ticker_at_entry : t.ticker_at_entry - t.ticker_at_exit), 0) / arr.length)
-      : null;
-    return { total: withMove.length, avgMoveWins: avgFav(wins), avgMoveLosses: avgFav(losses), avgAbsMove: avgAbs(withMove) };
+    const favMove = t => isCall(t) ? t.ticker_at_exit - t.ticker_at_entry : t.ticker_at_entry - t.ticker_at_exit;
+    const avgFav = arr => arr.length ? r2(arr.reduce((s, t) => s + favMove(t), 0) / arr.length) : null;
+    const maxFav = arr => arr.length ? r2(Math.max(...arr.map(t => favMove(t)))) : null;
+    const minFav = arr => arr.length ? r2(Math.min(...arr.map(t => favMove(t)))) : null;
+    // Per-trade sorted moves for bar chart
+    const sorted = [...withMove].sort((a, b) => new Date(a.trade_date) - new Date(b.trade_date));
+    const moveLabels = sorted.map(t => t.trade_date ? t.trade_date.slice(5) : '');
+    const moveVals   = sorted.map(t => r2(favMove(t)));
+    const moveIds    = sorted.map(t => t.id);
+    return {
+      total:         withMove.length,
+      avgMoveWins:   avgFav(wins),
+      avgMoveLosses: avgFav(losses),
+      maxWinMove:    maxFav(wins),
+      minWinMove:    minFav(wins),
+      maxLossMove:   maxFav(losses),
+      minLossMove:   minFav(losses),
+      moveLabels,
+      moveVals,
+      moveIds,
+    };
   })() : null;
 
   // Extrinsic buckets — uses optTrades (all have entry price so intrinsic is accurate)
@@ -352,7 +536,7 @@ function MonthBars({ months }) {
 }
 
 // ── Main component ────────────────────────────────
-export default function Analytics({ trades, data }) {
+export default function Analytics({ trades, data, onTradeClick }) {
   const [tagSort, setTagSort] = useState('total'); // total | pnl | wr
   const histRef = useRef(null);
   const dowChartRef = useRef(null);
@@ -365,14 +549,35 @@ export default function Analytics({ trades, data }) {
   const monthly  = useMemo(() => computeMonthly(trades),  [trades]);
   const byTag    = useMemo(() => computeByTag(trades),    [trades]);
   const holdStats= useMemo(() => computeHoldStats(trades),[trades]);
-  const optEntry    = useMemo(() => computeOptionsEntryAnalysis(trades), [trades]);
-  const intradayStats = useMemo(() => computeIntradayStats(trades), [trades]);
+  const optEntry        = useMemo(() => computeOptionsEntryAnalysis(trades), [trades]);
+  const intradayStats   = useMemo(() => computeIntradayStats(trades), [trades]);
+  const premiumAnalysis = useMemo(() => computePremiumAnalysis(trades), [trades]);
+  const ndxAnalysis     = useMemo(() => computeNdxAnalysis(trades), [trades]);
+  const moveChartRef    = useRef(null);
 
   // Daily P&L values for histogram
   const dailyPnlVals = useMemo(() => {
     if (!data) return [];
     return data.dates.map(d => data.dpnl[d]);
   }, [data]);
+
+  useEffect(() => {
+    if (optEntry?.moveStats?.moveVals?.length) {
+      drawMoveBars(
+        moveChartRef.current,
+        'movechart',
+        optEntry.moveStats.moveLabels,
+        optEntry.moveStats.moveVals,
+        180,
+        idx => {
+          const id = optEntry.moveStats.moveIds?.[idx];
+          if (id && onTradeClick) onTradeClick(id);
+        }
+      );
+    }
+    // Remove tooltip on unmount so it doesn't linger on other pages
+    return () => { document.getElementById('tipmovechart')?.remove(); };
+  }, [optEntry, onTradeClick]);
 
   useEffect(() => {
     if (dailyPnlVals.length > 0) {
@@ -758,35 +963,61 @@ export default function Analytics({ trades, data }) {
               </>
             )}
 
-            {/* Move captured on wins vs losses */}
+            {/* Move captured bar chart */}
             {optEntry.moveStats && (
               <>
-                <div style={{ fontSize: '.72rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
-                  Underlying Move Captured — Wins vs Losses
+                <div style={{ fontSize: '.72rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 10, marginTop: 4 }}>
+                  Underlying Move Captured per Trade
                 </div>
-                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-                  <div style={{ flex: 1, minWidth: 140, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
-                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG MOVE ON WINS</div>
-                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--green)' }}>
-                      {optEntry.moveStats.avgMoveWins !== null ? `+${optEntry.moveStats.avgMoveWins.toFixed(1)} pts` : '—'}
+
+                {/* Wins row */}
+                <div style={{ fontSize: '.68rem', color: 'var(--green)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>Winning Trades</div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+                  <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG MOVE</div>
+                    <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--green)' }}>
+                      {optEntry.moveStats.avgMoveWins !== null ? `${optEntry.moveStats.avgMoveWins.toFixed(1)} pts` : '—'}
                     </div>
-                    <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 3 }}>favorable direction</div>
                   </div>
-                  <div style={{ flex: 1, minWidth: 140, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
-                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG MOVE ON LOSSES</div>
-                    <div style={{ fontSize: '1.4rem', fontWeight: 800, color: 'var(--red)' }}>
+                  <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>HIGHEST MOVE</div>
+                    <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--green)' }}>
+                      {optEntry.moveStats.maxWinMove !== null ? `${optEntry.moveStats.maxWinMove.toFixed(1)} pts` : '—'}
+                    </div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>LOWEST MOVE</div>
+                    <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--green)' }}>
+                      {optEntry.moveStats.minWinMove !== null ? `${optEntry.moveStats.minWinMove.toFixed(1)} pts` : '—'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Losses row */}
+                <div style={{ fontSize: '.68rem', color: 'var(--red)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>Losing Trades</div>
+                <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+                  <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG MOVE</div>
+                    <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--red)' }}>
                       {optEntry.moveStats.avgMoveLosses !== null ? `${optEntry.moveStats.avgMoveLosses.toFixed(1)} pts` : '—'}
                     </div>
-                    <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 3 }}>favorable direction</div>
                   </div>
-                  <div style={{ flex: 1, minWidth: 140, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
-                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG ABS MOVE</div>
-                    <div style={{ fontSize: '1.4rem', fontWeight: 800 }}>
-                      {optEntry.moveStats.avgAbsMove !== null ? `${optEntry.moveStats.avgAbsMove.toFixed(1)} pts` : '—'}
+                  <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>HIGHEST MOVE</div>
+                    <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--red)' }}>
+                      {optEntry.moveStats.maxLossMove !== null ? `${optEntry.moveStats.maxLossMove.toFixed(1)} pts` : '—'}
                     </div>
-                    <div style={{ fontSize: '.7rem', color: 'var(--muted)', marginTop: 3 }}>across {optEntry.moveStats.total} trades</div>
+                  </div>
+                  <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                    <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>LOWEST MOVE</div>
+                    <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--red)' }}>
+                      {optEntry.moveStats.minLossMove !== null ? `${optEntry.moveStats.minLossMove.toFixed(1)} pts` : '—'}
+                    </div>
                   </div>
                 </div>
+
+                {/* Bar chart — one bar per trade, green = win, red = loss */}
+                <canvas ref={moveChartRef} style={{ width: '100%', display: 'block' }} />
               </>
             )}
           </div>
@@ -880,6 +1111,202 @@ export default function Analytics({ trades, data }) {
                 </table>
               </>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Premium Entry/Exit Price Analysis ── */}
+      {premiumAnalysis && (
+        <div style={{ marginTop: 14 }}>
+          <div className="chart-card">
+            <SectionHeader dot="var(--purple)" title={`Premium Analysis · ${premiumAnalysis.total} options trades`} />
+
+            {/* Win vs Loss avg buy/sell/return summary */}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16, marginTop: 4 }}>
+              <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG ENTRY — WINS</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--green)' }}>${premiumAnalysis.avgBuyWins ?? '—'}</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG ENTRY — LOSSES</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--red)' }}>${premiumAnalysis.avgBuyLoss ?? '—'}</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG EXIT — WINS</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--green)' }}>${premiumAnalysis.avgSellWins ?? '—'}</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG EXIT — LOSSES</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--red)' }}>${premiumAnalysis.avgSellLoss ?? '—'}</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG RETURN — WINS</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--green)' }}>{premiumAnalysis.avgRetWins != null ? `${premiumAnalysis.avgRetWins}%` : '—'}</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 130, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG RETURN — LOSSES</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--red)' }}>{premiumAnalysis.avgRetLoss != null ? `${premiumAnalysis.avgRetLoss}%` : '—'}</div>
+              </div>
+            </div>
+
+            {/* Tier table — win rate by entry premium bucket */}
+            <div style={{ fontSize: '.72rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+              Win Rate by Entry Premium
+            </div>
+            <table style={{ width: '100%', fontSize: '.82rem', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ color: 'var(--muted)', fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                  <th style={{ textAlign: 'left', paddingBottom: 8 }}>Buy Price</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Trades</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Avg Entry</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Avg Exit</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Avg Ret%</th>
+                  <th style={{ textAlign: 'left', paddingBottom: 8, paddingLeft: 12 }}>Win Rate</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Net P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody>
+                {premiumAnalysis.tierStats.map(t => (
+                  <tr key={t.label} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ padding: '8px 0', fontWeight: 600 }}>{t.label}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--muted)' }}>{t.total}</td>
+                    <td style={{ textAlign: 'right' }}>${t.avgBuy}</td>
+                    <td style={{ textAlign: 'right' }}>${t.avgSell}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600, color: t.avgRet >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {t.avgRet != null ? `${t.avgRet}%` : '—'}
+                    </td>
+                    <td style={{ paddingLeft: 12, minWidth: 120 }}><WinBar wins={t.wins} total={t.total} /></td>
+                    <td style={{ textAlign: 'right', fontWeight: 700, color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {fMoney(t.pnl, true)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* ── NDX Deep Analysis ── */}
+      {ndxAnalysis && (
+        <div style={{ marginTop: 14 }}>
+          <div className="chart-card">
+            <SectionHeader dot="#7c6fff" title={`NDX Options Analysis · ${ndxAnalysis.total} trades`} />
+
+            {/* Top summary cards */}
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16, marginTop: 4 }}>
+              <div style={{ flex: 1, minWidth: 120, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>NET P&amp;L</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: ndxAnalysis.totalPnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                  {fMoney(ndxAnalysis.totalPnl, true)}
+                </div>
+              </div>
+              <div style={{ flex: 1, minWidth: 120, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>WIN RATE</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800 }}>
+                  {ndxAnalysis.total ? Math.round(ndxAnalysis.wins / ndxAnalysis.total * 100) : 0}%
+                  <span style={{ fontSize: '.75rem', color: 'var(--muted)', marginLeft: 6 }}>{ndxAnalysis.wins}W / {ndxAnalysis.losses}L</span>
+                </div>
+              </div>
+              <div style={{ flex: 1, minWidth: 120, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG ENTRY — WINS</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--green)' }}>${ndxAnalysis.avgBuyWins ?? '—'}</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 120, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG ENTRY — LOSSES</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--red)' }}>${ndxAnalysis.avgBuyLoss ?? '—'}</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 120, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG RETURN — WINS</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--green)' }}>{ndxAnalysis.avgRetWins != null ? `${ndxAnalysis.avgRetWins}%` : '—'}</div>
+              </div>
+              <div style={{ flex: 1, minWidth: 120, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG RETURN — LOSSES</div>
+                <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--red)' }}>{ndxAnalysis.avgRetLoss != null ? `${ndxAnalysis.avgRetLoss}%` : '—'}</div>
+              </div>
+              {ndxAnalysis.avgDurWins != null && (
+                <div style={{ flex: 1, minWidth: 120, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                  <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG HOLD — WINS</div>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--green)' }}>{fDuration(ndxAnalysis.avgDurWins)}</div>
+                </div>
+              )}
+              {ndxAnalysis.avgDurLoss != null && (
+                <div style={{ flex: 1, minWidth: 120, background: 'var(--bg)', borderRadius: 8, padding: '12px 14px' }}>
+                  <div style={{ fontSize: '.65rem', color: 'var(--muted)', marginBottom: 4 }}>AVG HOLD — LOSSES</div>
+                  <div style={{ fontSize: '1.3rem', fontWeight: 800, color: 'var(--red)' }}>{fDuration(ndxAnalysis.avgDurLoss)}</div>
+                </div>
+              )}
+            </div>
+
+            {/* CALL vs PUT */}
+            <div style={{ fontSize: '.72rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+              CALL vs PUT Breakdown
+            </div>
+            <table style={{ width: '100%', fontSize: '.82rem', borderCollapse: 'collapse', marginBottom: 16 }}>
+              <thead>
+                <tr style={{ color: 'var(--muted)', fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                  <th style={{ textAlign: 'left', paddingBottom: 8 }}>Type</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Trades</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Wins</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Losses</th>
+                  <th style={{ textAlign: 'left', paddingBottom: 8, paddingLeft: 12 }}>Win Rate</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Avg Ret%</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Net P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ndxAnalysis.typeStats.map(t => (
+                  <tr key={t.label} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ padding: '8px 0', fontWeight: 700, color: t.label === 'CALL' ? 'var(--green)' : 'var(--red)' }}>{t.label}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--muted)' }}>{t.total}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--green)' }}>{t.wins}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--red)' }}>{t.losses}</td>
+                    <td style={{ paddingLeft: 12, minWidth: 120 }}><WinBar wins={t.wins} total={t.total} /></td>
+                    <td style={{ textAlign: 'right', color: t.avgRet >= 0 ? 'var(--green)' : 'var(--red)', fontWeight: 600 }}>
+                      {t.avgRet != null ? `${t.avgRet}%` : '—'}
+                    </td>
+                    <td style={{ textAlign: 'right', fontWeight: 700, color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {fMoney(t.pnl, true)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {/* Premium tier table */}
+            <div style={{ fontSize: '.72rem', color: 'var(--muted)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 8 }}>
+              Win Rate by Entry Premium
+            </div>
+            <table style={{ width: '100%', fontSize: '.82rem', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ color: 'var(--muted)', fontSize: '.7rem', textTransform: 'uppercase', letterSpacing: '.04em' }}>
+                  <th style={{ textAlign: 'left', paddingBottom: 8 }}>Buy Price</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Trades</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Avg Entry</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Avg Exit</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Avg Ret%</th>
+                  <th style={{ textAlign: 'left', paddingBottom: 8, paddingLeft: 12 }}>Win Rate</th>
+                  <th style={{ textAlign: 'right', paddingBottom: 8 }}>Net P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody>
+                {ndxAnalysis.tierStats.map(t => (
+                  <tr key={t.label} style={{ borderTop: '1px solid var(--border)' }}>
+                    <td style={{ padding: '8px 0', fontWeight: 600 }}>{t.label}</td>
+                    <td style={{ textAlign: 'right', color: 'var(--muted)' }}>{t.total}</td>
+                    <td style={{ textAlign: 'right' }}>${t.avgBuy}</td>
+                    <td style={{ textAlign: 'right' }}>${t.avgSell}</td>
+                    <td style={{ textAlign: 'right', fontWeight: 600, color: t.avgRet >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {t.avgRet != null ? `${t.avgRet}%` : '—'}
+                    </td>
+                    <td style={{ paddingLeft: 12, minWidth: 120 }}><WinBar wins={t.wins} total={t.total} /></td>
+                    <td style={{ textAlign: 'right', fontWeight: 700, color: t.pnl >= 0 ? 'var(--green)' : 'var(--red)' }}>
+                      {fMoney(t.pnl, true)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
       )}

@@ -173,6 +173,74 @@ export function drawBars(el, id, labels, vals, h = 220) {
   addHover(el, id, labels, vals, PAD);
 }
 
+// drawMoveBars — like drawBars but tooltip shows "pts" and supports click callback
+export function drawMoveBars(el, id, labels, vals, h = 220, onBarClick) {
+  const r = setupC(el, h); if (!r) return;
+  const { ctx, w, h: ht } = r;
+  const PAD = { t: 20, r: 18, b: 46, l: 66 };
+  const cw = w - PAD.l - PAD.r, ch = ht - PAD.t - PAD.b;
+  const mn = Math.min(...vals, 0), mx = Math.max(...vals, 0);
+  const { ticks, nMin, nMax } = niceTicks(mn, mx, 4);
+  const rng = nMax - nMin || 1;
+  const gap = cw / vals.length, bw = Math.max(2, gap * 0.72);
+  const ty = v => PAD.t + ch - (v - nMin) / rng * ch;
+
+  gridLines(ctx, PAD, cw, ch, ticks, nMin, nMax);
+  ctx.strokeStyle = 'rgba(100,130,180,.4)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(PAD.l, ty(0)); ctx.lineTo(PAD.l + cw, ty(0)); ctx.stroke();
+
+  vals.forEach((v, i) => {
+    const x   = PAD.l + i * gap + gap / 2 - bw / 2;
+    const top = ty(Math.max(v, 0));
+    const bh  = Math.max(1, Math.abs(ty(Math.min(v, 0)) - ty(Math.max(v, 0))));
+    ctx.fillStyle = v >= 0 ? CC.GREEN : CC.RED; ctx.globalAlpha = 0.85;
+    rrect(ctx, x, top, bw, bh, 3); ctx.fill(); ctx.globalAlpha = 1;
+  });
+
+  xLabels(ctx, labels, PAD, cw, ht, Math.max(1, Math.ceil(labels.length / 18)));
+
+  const getIdx = mx => Math.min(vals.length - 1, Math.max(0, Math.floor((mx - PAD.l) / (cw / vals.length))));
+
+  // Tooltip showing pts instead of $
+  if (!el) return;
+  el.onmousemove = e => {
+    const rect = el.getBoundingClientRect(), mx = e.clientX - rect.left;
+    if (mx < PAD.l || mx > el.offsetWidth - PAD.r) { removeTip(id); return; }
+    const idx = getIdx(mx);
+    const v = vals[idx];
+    let tip = document.getElementById('tip' + id);
+    if (!tip) {
+      tip = document.createElement('div'); tip.id = 'tip' + id;
+      tip.style.cssText = 'position:fixed;background:#1a2035;border:1px solid #1f2d4a;border-radius:8px;padding:8px 12px;font-size:11px;pointer-events:none;z-index:50;color:#e2e8f0';
+      document.body.appendChild(tip);
+    }
+    tip.textContent = '';
+    const b = document.createElement('b'); b.textContent = labels[idx];
+    const br = document.createElement('br');
+    const sp = document.createElement('span');
+    sp.style.color = v >= 0 ? '#22c55e' : '#ef4444';
+    sp.textContent = (v >= 0 ? '+' : '') + v.toFixed(1) + ' pts';
+    const hint = document.createElement('span');
+    hint.style.cssText = 'display:block;color:#6b7fa3;font-size:10px;margin-top:2px';
+    hint.textContent = 'click to open in journal';
+    tip.append(b, br, sp, hint);
+    tip.style.left = (e.clientX + 12) + 'px';
+    tip.style.top  = (e.clientY - 10) + 'px';
+    tip.style.opacity = '1';
+    el.style.cursor = 'pointer';
+  };
+  el.onmouseleave = () => { removeTip(id); el.style.cursor = ''; };
+  el.onclick = e => {
+    // Destroy tooltip immediately so it doesn't persist after navigation
+    const tip = document.getElementById('tip' + id);
+    if (tip) tip.remove();
+    if (!onBarClick) return;
+    const rect = el.getBoundingClientRect(), mx = e.clientX - rect.left;
+    if (mx < PAD.l || mx > el.offsetWidth - PAD.r) return;
+    onBarClick(getIdx(mx));
+  };
+}
+
 export function drawMonthly(el, labels, vals, h = 180) {
   const r = setupC(el, h); if (!r) return;
   const { ctx, w, h: ht } = r;

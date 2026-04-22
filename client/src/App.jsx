@@ -140,7 +140,7 @@ export default function App() {
             <Export trades={allTrades} />
           )}
           {page === 'analytics' && (
-            <Analytics trades={allTrades} data={data} />
+            <Analytics trades={allTrades} data={data} onTradeClick={id => { setHighlightId(id); setPage('journal'); }} />
           )}
           {page === 'rules' && (
             <Rules trades={allTrades} onToast={showToast} />
