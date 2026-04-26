@@ -363,7 +363,9 @@ export default function OptionsScanner() {
                     <div className="os-core-card-header">
                       <span className="os-ticker-cell">{s.ticker}</span>
                       <span className="os-muted" style={{fontSize:'0.75rem'}}>{s.label}</span>
-                      <span style={{fontSize:'0.65rem', padding:'0.1rem 0.4rem', borderRadius:'6px', background:'#0f172a', color:'#f59e0b', border:'1px solid #f59e0b', fontWeight:700, letterSpacing:'0.05em'}}>0DTE</span>
+                      <span style={{fontSize:'0.65rem', padding:'0.1rem 0.4rem', borderRadius:'6px', background:'#0f172a', color:'#f59e0b', border:'1px solid #f59e0b', fontWeight:700, letterSpacing:'0.05em'}}>
+                        {s.options?.expiryDate === new Date().toISOString().slice(0,10) ? '0DTE' : (s.options?.expiryDate || '0DTE')}
+                      </span>
                       <span
                         className="os-signal-pill"
                         style={{ background: (SIGNAL_COLOR[s.options?.signal] || '#94a3b8') + '22', color: SIGNAL_COLOR[s.options?.signal] || '#94a3b8' }}

@@ -260,16 +260,24 @@ async function analyzeOptionsChain(ticker, currentPrice, zeroDTE = false) {
 
     if (zeroDTE) {
       // Find the expiry bucket whose contracts expire today
-      const todayExpiry = result.options.find(exp => {
+      let todayExpiry = result.options.find(exp => {
         // Each contract in the bucket shares the same expiry date
         const sample = (exp.calls?.[0] || exp.puts?.[0]);
         if (!sample?.expiration) return false;
         return new Date(sample.expiration * 1000).toISOString().slice(0, 10) === todayStr;
       });
       if (!todayExpiry) {
-        console.warn(`  ⚠️  No 0DTE contracts found for ${ticker} on ${todayStr} (market may be closed or no same-day expiry)`);
-        return null;
+        // No same-day expiry (weekend / non-expiry day) — fall back to nearest expiry
+        console.warn(`  ⚠️  No 0DTE contracts for ${ticker} on ${todayStr} — falling back to nearest expiry`);
+        todayExpiry = result.options
+          .filter(exp => (exp.calls?.[0] || exp.puts?.[0])?.expiration)
+          .sort((a, b) => {
+            const sa = (a.calls?.[0] || a.puts?.[0]).expiration;
+            const sb = (b.calls?.[0] || b.puts?.[0]).expiration;
+            return sa - sb;
+          })[0];
       }
+      if (!todayExpiry) return null;
       allCalls = todayExpiry.calls || [];
       allPuts  = todayExpiry.puts  || [];
     } else {
@@ -318,7 +326,13 @@ async function analyzeOptionsChain(ticker, currentPrice, zeroDTE = false) {
       ticker,
       currentPrice,
       zeroDTE,
-      expiryDate: zeroDTE ? todayStr : null,
+      expiryDate: zeroDTE
+        ? (allCalls[0]?.expiration
+            ? new Date(allCalls[0].expiration * 1000).toISOString().slice(0, 10)
+            : (allPuts[0]?.expiration
+                ? new Date(allPuts[0].expiration * 1000).toISOString().slice(0, 10)
+                : todayStr))
+        : null,
       totalCallOI,
       totalPutOI,
       totalCallVol,
