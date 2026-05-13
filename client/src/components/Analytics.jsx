@@ -2,7 +2,6 @@ import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { fMoney, fY, r2 } from '../utils/helpers.js';
 import { drawHistogram, drawDOW, drawBars, drawMoveBars } from '../utils/canvas.js';
 
-// ── Pure-computation helpers ──────────────────────
 
 function parseSlash(s) {
   if (!s) return null;
